@@ -1,3 +1,10 @@
-from .model import RelationalGraphNeuralNetwork
+from .model import AggregationFunction, UpdateFunction, MessageFunction, InputSignature, RelationalGraphNeuralNetworkConfig, RelationalGraphNeuralNetwork
 
-__all__ = ["RelationalGraphNeuralNetwork"]
+__all__ = [
+    "AggregationFunction",
+    "UpdateFunction",
+    "MessageFunction",
+    "InputSignature",
+    "RelationalGraphNeuralNetworkConfig",
+    "RelationalGraphNeuralNetwork"
+]

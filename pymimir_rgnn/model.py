@@ -3,8 +3,79 @@ import random
 import torch
 import torch.nn as nn
 
+from dataclasses import dataclass, field, fields
+from enum import Enum
 from pathlib import Path
 from typing import Union
+
+
+class AggregationFunction(Enum):
+    Add = 'add'
+    Mean = 'mean'
+    HardMaximum = 'hmax'
+    SmoothMaximum = 'smax'
+
+
+class UpdateFunction(Enum):
+    MLP = 'mlp'
+
+
+class MessageFunction(Enum):
+    MLP = 'mlp'
+
+
+class InputSignature(Enum):
+    State = 'state'
+    StateGoal = 'state_goal'
+    StateActions = 'state_actions'
+    StateActionsGoal = 'state_actions_goal'
+
+
+@dataclass
+class RelationalGraphNeuralNetworkConfig:
+    domain: 'mm.Domain' = field(
+        metadata={'doc': 'The domain of the planning problem.'}
+    )
+
+    embedding_size: 'int' = field(
+        default=32,
+        metadata={'doc': 'The size of the node embeddings.'}
+    )
+
+    num_layers: 'int' = field(
+        default=30,
+        metadata={'doc': 'The number of message passing layers.'}
+    )
+
+    message_aggregation: 'AggregationFunction' = field(
+        default=AggregationFunction.HardMaximum,
+        metadata={'doc': 'The aggregation method for message passing. Options are "add", "mean", "smax", "hmax".'},
+    )
+
+    message_function: 'MessageFunction' = field(
+        default=MessageFunction.MLP,
+        metadata={'doc': 'The type of the message function.'}
+    )
+
+    update_function: 'UpdateFunction' = field(
+        default=UpdateFunction.MLP,
+        metadata={'doc': 'The type of the update function.'}
+    )
+
+    normalize_updates: 'bool' = field(
+        default=True,
+        metadata={'doc': 'Whether to apply layer normalization to the embedding updates.'}
+    )
+
+    global_readout: 'bool' = field(
+        default=False,
+        metadata={'doc': 'Whether to use a global readout for the node embeddings.'}
+    )
+
+    random_initialization: 'bool' = field(
+        default=False,
+        metadata={'doc': 'Whether to use random initialization for the node embeddings.'}
+    )
 
 
 def _get_atom_name(atom: 'mm.GroundAtom', state: 'mm.State', is_goal_atom: 'bool'):
@@ -63,24 +134,26 @@ class SumReadout(nn.Module):
 
 
 class RelationMessagePassingBase(nn.Module):
-    def __init__(self, domain: 'mm.Domain', embedding_size: 'int'):
+    def __init__(self, config: 'RelationalGraphNeuralNetworkConfig'):
         super().__init__()
         ignored_predicate_names = ['number']
-        predicates = [predicate for predicate in domain.get_predicates() if predicate.get_name() not in ignored_predicate_names]
+        predicates = [predicate for predicate in config.domain.get_predicates() if predicate.get_name() not in ignored_predicate_names]
         relation_name_arities = []
         relation_name_arities.extend([(_get_predicate_name(predicate, False, True), len(predicate.get_parameters())) for predicate in predicates])
         relation_name_arities.extend([(_get_predicate_name(predicate, True, True), len(predicate.get_parameters())) for predicate in predicates])
         relation_name_arities.extend([(_get_predicate_name(predicate, True, False), len(predicate.get_parameters())) for predicate in predicates])
-        relation_name_arities.extend([(_get_action_name(action), action.get_arity() + 1) for action in domain.get_actions()])
+        relation_name_arities.extend([(_get_action_name(action), action.get_arity() + 1) for action in config.domain.get_actions()])
         relation_name_arities.sort()  # Ensure that relations are always processed in the same order
-        self._embedding_size = embedding_size
+        self._embedding_size = config.embedding_size
         self._relation_mlps = nn.ModuleDict()
         for relation_name, relation_arity in relation_name_arities:
-            input_size = relation_arity * embedding_size
-            output_size = relation_arity * embedding_size
+            input_size = relation_arity * config.embedding_size
+            output_size = relation_arity * config.embedding_size
             if (input_size > 0) and (output_size > 0):
+                assert config.message_function == MessageFunction.MLP, 'Other types of message functions are not implemented yet'
                 self._relation_mlps[relation_name] = MLP(input_size, output_size)
-        self._update_mlp = MLP(2 * embedding_size, embedding_size)
+        assert config.update_function == UpdateFunction.MLP, 'Other types of update functions are not implemented yet.'
+        self._update = MLP(2 * config.embedding_size, config.embedding_size)
 
     def _compute_messages_and_indices(self, node_embeddings: 'torch.Tensor', relations: 'dict[str, torch.Tensor]'):
         output_messages_list = []
@@ -98,8 +171,8 @@ class RelationMessagePassingBase(nn.Module):
 
 
 class MeanRelationMessagePassing(RelationMessagePassingBase):
-    def __init__(self, domain: 'mm.Domain', embedding_size: 'int'):
-        super().__init__(domain, embedding_size)
+    def __init__(self, config: 'RelationalGraphNeuralNetworkConfig'):
+        super().__init__(config)
 
     def forward(self, node_embeddings: 'torch.Tensor', relations: 'dict[str, torch.Tensor]') -> 'torch.Tensor':
         output_messages, output_indices = self._compute_messages_and_indices(node_embeddings, relations)
@@ -108,34 +181,34 @@ class MeanRelationMessagePassing(RelationMessagePassingBase):
         sum_msg.index_add_(0, output_indices, output_messages)
         cnt_msg.index_add_(0, output_indices, torch.ones_like(output_messages))
         avg_msg = sum_msg / cnt_msg
-        return self._update_mlp(torch.cat((avg_msg, node_embeddings), 1))
+        return self._update(torch.cat((avg_msg, node_embeddings), 1))
 
 
 class SumRelationMessagePassing(RelationMessagePassingBase):
-    def __init__(self, domain: 'mm.Domain', embedding_size: 'int'):
-        super().__init__(domain, embedding_size)
+    def __init__(self, config: 'RelationalGraphNeuralNetworkConfig'):
+        super().__init__(config)
 
     def forward(self, node_embeddings: 'torch.Tensor', relations: 'dict[str, torch.Tensor]') -> 'torch.Tensor':
         output_messages, output_indices = self._compute_messages_and_indices(node_embeddings, relations)
         sum_msg = torch.zeros_like(node_embeddings)
         sum_msg.index_add_(0, output_indices, output_messages)
-        return self._update_mlp(torch.cat((sum_msg, node_embeddings), 1))
+        return self._update(torch.cat((sum_msg, node_embeddings), 1))
 
 
 class HardMaximumRelationMessagePassing(RelationMessagePassingBase):
-    def __init__(self, domain: 'mm.Domain', embedding_size: 'int'):
-        super().__init__(domain, embedding_size)
+    def __init__(self, config: 'RelationalGraphNeuralNetworkConfig'):
+        super().__init__(config)
 
     def forward(self, node_embeddings: 'torch.Tensor', relations: 'dict[str, torch.Tensor]') -> 'torch.Tensor':
         output_messages, output_indices = self._compute_messages_and_indices(node_embeddings, relations)
         max_msg = torch.full_like(node_embeddings, float('-inf')) # include_self=False leads to an error for some reason. Use -inf to get the same result.
         max_msg.index_reduce_(0, output_indices, output_messages, reduce='amax', include_self=True)
-        return self._update_mlp(torch.cat((max_msg, node_embeddings), 1))
+        return self._update(torch.cat((max_msg, node_embeddings), 1))
 
 
 class SmoothMaximumRelationMessagePassing(RelationMessagePassingBase):
-    def __init__(self, domain: 'mm.Domain', embedding_size: 'int'):
-        super().__init__(domain, embedding_size)
+    def __init__(self, config: 'RelationalGraphNeuralNetworkConfig'):
+        super().__init__(config)
 
     def forward(self, node_embeddings: 'torch.Tensor', relations: 'dict[str, torch.Tensor]') -> 'torch.Tensor':
         output_messages, output_indices = self._compute_messages_and_indices(node_embeddings, relations)
@@ -148,41 +221,29 @@ class SmoothMaximumRelationMessagePassing(RelationMessagePassingBase):
         exps_sum = torch.full_like(node_embeddings, 1E-16)
         exps_sum.index_add_(0, output_indices, exps)
         max_msg = ((1.0 / MAXIMUM_SMOOTHNESS) * exps_sum.log()) + exps_max
-        return self._update_mlp(torch.cat((max_msg, node_embeddings), 1))
+        return self._update(torch.cat((max_msg, node_embeddings), 1))
 
 
 class RelationalMessagePassingModule(nn.Module):
-    def __init__(
-        self,
-        domain: 'mm.Domain',
-        aggregation: 'str',
-        embedding_size: 'int',
-        num_layers: 'int',
-        global_readout: 'bool' = False,
-        normalization: 'bool' = False,
-        random_initialization: 'bool' = False,
-    ):
+    def __init__(self, config: 'RelationalGraphNeuralNetworkConfig'):
         super().__init__()
-        self._embedding_size = embedding_size
-        self._num_layers = num_layers
-        self._global_readout = global_readout
-        self._normalization = normalization
-        self._random_initialization = random_initialization
-        if aggregation == 'add':
-            self._relation_network = SumRelationMessagePassing(domain, embedding_size)
-        elif aggregation == 'mean':
-            self._relation_network = MeanRelationMessagePassing(domain, embedding_size)
-        elif aggregation == 'smax':
-            self._relation_network = SmoothMaximumRelationMessagePassing(domain, embedding_size)
-        elif aggregation == 'hmax':
-            self._relation_network = HardMaximumRelationMessagePassing(domain, embedding_size)
+        self.config = config
+        if config.message_aggregation == AggregationFunction.Add:
+            self._relation_network = SumRelationMessagePassing(config)
+        elif config.message_aggregation == AggregationFunction.Mean:
+            self._relation_network = MeanRelationMessagePassing(config)
+        elif config.message_aggregation == AggregationFunction.SmoothMaximum:
+            self._relation_network = SmoothMaximumRelationMessagePassing(config)
+        elif config.message_aggregation == AggregationFunction.HardMaximum:
+            self._relation_network = HardMaximumRelationMessagePassing(config)
         else:
-            raise ValueError('aggregation is not one of ["add", "mean", "smax", "hmax"]')
-        if global_readout:
-            self._global_readout = SumReadout(embedding_size, embedding_size)
-            self._global_update_mlp = MLP(2 * embedding_size, embedding_size)
-        if normalization:
-            self._normalization = nn.LayerNorm(embedding_size)
+            raise ValueError(f'aggregation is not one of ["{AggregationFunction.Add}", "{AggregationFunction.Mean}", "{AggregationFunction.SmoothMaximum}", "{AggregationFunction.HardMaximum}"]')
+        if config.global_readout:
+            assert config.update_function == UpdateFunction.MLP, 'Other types of update functions are not implemented yet.'
+            self._global_readout = SumReadout(config.embedding_size, config.embedding_size)
+            self._global_update = MLP(2 * config.embedding_size, config.embedding_size)
+        if config.normalize_updates:
+            self._update_normalization = nn.LayerNorm(config.embedding_size)
 
     def forward(
         self,
@@ -191,24 +252,24 @@ class RelationalMessagePassingModule(nn.Module):
         node_sizes: 'torch.Tensor',
         random_readout: 'bool',
     ) -> 'tuple[torch.Tensor, Union[torch.Tensor, None]]':
-        node_embeddings: 'torch.Tensor' = torch.zeros([node_sizes.sum(), self._embedding_size], dtype=torch.float, requires_grad=True, device=node_sizes.device)
-        if self._random_initialization:
+        node_embeddings: 'torch.Tensor' = torch.zeros([node_sizes.sum(), self.config.embedding_size], dtype=torch.float, requires_grad=True, device=node_sizes.device)
+        if self.config.random_initialization:
             rng_state = torch.get_rng_state()
             torch.manual_seed(1234)  # TODO: The seed should probably be the hash of the instance.
-            random_embeddings = torch.randn([object_indices.size(0), self._embedding_size], dtype=torch.float, requires_grad=True, device=node_sizes.device)
+            random_embeddings = torch.randn([object_indices.size(0), self.config.embedding_size], dtype=torch.float, requires_grad=True, device=node_sizes.device)
             node_embeddings = node_embeddings.index_add(0, object_indices, random_embeddings)
             torch.set_rng_state(rng_state)
-        random_iteration = random.randint(0, self._num_layers - 1) if random_readout else -1
+        random_iteration = random.randint(0, self.config.num_layers - 1) if random_readout else -1
         random_node_embeddings = None
-        for iteration in range(self._num_layers):
+        for iteration in range(self.config.num_layers):
             relation_messages = self._relation_network(node_embeddings, relations)
-            if self._normalization:
-                relation_messages = self._normalization(relation_messages)  # Normalize the magnitude of the message's values to be between -1 and 1.
-            if self._global_readout:
+            if self.config.normalize_updates:
+                relation_messages = self._update_normalization(relation_messages)  # Normalize the magnitude of the message's values to be between -1 and 1.
+            if self.config.global_readout:
                 global_embedding = self._global_readout(node_embeddings, node_sizes)
-                global_messages = self._global_update_mlp(torch.cat((node_embeddings, global_embedding.repeat_interleave(node_sizes, dim=0)), 1))
-                if self._normalization:
-                    global_messages = self._normalization(global_messages)
+                global_messages = self._global_update(torch.cat((node_embeddings, global_embedding.repeat_interleave(node_sizes, dim=0)), 1))
+                if self.config.normalize_updates:
+                    global_messages = self._update_normalization(global_messages)
                 node_embeddings = node_embeddings + global_messages + relation_messages
             else:
                 node_embeddings = node_embeddings + relation_messages
@@ -218,36 +279,18 @@ class RelationalMessagePassingModule(nn.Module):
 
 
 class RelationalGraphNeuralNetwork(nn.Module):
-    def __init__(self, domain: 'mm.Domain', aggregation: 'str', embedding_size: 'int', num_layers: 'int', global_readout: 'bool', normalization: 'bool', random_initialization: 'bool'):
+    def __init__(self, config: 'RelationalGraphNeuralNetworkConfig'):
         """
         Relational Graph Neural Network (RGNN) for planning states.
 
-        :param domain: The domain of the planning problem.
-        :type domain: mimir.Domain
-        :param aggregation: The aggregation method for message passing. Options are 'add', 'mean', 'smax', 'hmax'.
-        :type aggregation: 'str'
-        :param embedding_size: The size of the node embeddings.
-        :type embedding_size: 'int'
-        :param num_layers: The number of message passing layers.
-        :type num_layers: 'int'
-        :param global_readout: Whether to use a global readout for the node embeddings.
-        :type global_readout: 'bool'
-        :param normalization: Whether to apply layer normalization to the node embeddings.
-        :type normalization: 'bool'
-        :param random_initialization: Whether to use random initialization for the node embeddings.
-        :type random_initialization: 'bool'
+        :param config: The config of the R-GNN.
+        :type config: RelationalGraphNeuralNetworkConfig
         """
         super().__init__()
-        self._domain = domain
-        self._aggregation = aggregation
-        self._embedding_size = embedding_size
-        self._num_layers = num_layers
-        self._global_readout = global_readout
-        self._normalization = normalization
-        self._random_initialization = random_initialization
-        self._mpnn_module = RelationalMessagePassingModule(domain, aggregation, embedding_size, num_layers, global_readout, normalization, random_initialization)
-        self._object_readout = SumReadout(embedding_size, embedding_size)
-        self._action_value = MLP(2 * embedding_size, 1)
+        self.config = config
+        self._mpnn_module = RelationalMessagePassingModule(config)
+        self._object_readout = SumReadout(config.embedding_size, config.embedding_size)
+        self._action_value = MLP(2 * config.embedding_size, 1)
         self._dummy = nn.Parameter(torch.empty(0))
 
     def get_device(self):
@@ -336,23 +379,6 @@ class RelationalGraphNeuralNetwork(nn.Module):
         else:
             return q_value_readout(final_node_embeddings)
 
-    def get_state_and_hparams_dicts(self) ->  'tuple[dict, dict]':
-        """
-        Returns the model's state dictionary and hyperparameters as a tuple.
-
-        :return: A tuple containing the model's state dictionary and a dictionary of hyperparameters.
-        :rtype: tuple[dict, dict]
-        """
-        hparams = {
-            'aggregation': self._aggregation,
-            'embedding_size': self._embedding_size,
-            'num_layers': self._num_layers,
-            'global_readout': self._global_readout,
-            'normalization': self._normalization,
-            'random_initialization': self._random_initialization
-        }
-        return self.state_dict(), hparams
-
     def clone(self) -> 'RelationalGraphNeuralNetwork':
         """
         Clones the model's weights and hyperparameters.
@@ -360,9 +386,8 @@ class RelationalGraphNeuralNetwork(nn.Module):
         :return: A new instance of RelationalGraphNeuralNetwork with the same weights and hyperparameters.
         :rtype: RelationalGraphNeuralNetwork
         """
-        state_dict, hparams_dict = self.get_state_and_hparams_dicts()
-        model_clone = RelationalGraphNeuralNetwork(self._domain, **hparams_dict)
-        model_clone.load_state_dict(state_dict)
+        model_clone = RelationalGraphNeuralNetwork(self.config)
+        model_clone.load_state_dict(self.state_dict())
         return model_clone.to(self.get_device())
 
     def copy_to(self, destination_model: 'RelationalGraphNeuralNetwork') -> 'None':
@@ -373,18 +398,19 @@ class RelationalGraphNeuralNetwork(nn.Module):
         """
         destination_model.load_state_dict(self.state_dict())
 
-    def save(self, path: 'str', extras: 'dict' = {}) -> 'None':
+    def save(self, path: 'Union[Path, str]', extras: 'dict' = {}) -> 'None':
         """
         Saves the model's state and hyperparameters to a file.
         The parameter `extras` can be used to store additional information in the checkpoint, e.g., the optimizer state.
 
         :param path: The path to save the model checkpoint.
-        :type path: 'str'
+        :type path: 'Path | str'
         :param extras: Additional information to store in the checkpoint.
         :type extras: dict
         """
-        model_dict, hparams_dict = self.get_state_and_hparams_dicts()
-        checkpoint = { 'model': model_dict, 'hparams': hparams_dict, 'extras': extras}
+        config_dict = { f.name: getattr(self.config, f.name) for f in fields(self.config) }
+        del config_dict['domain']  # The domain is cannot be serialized.
+        checkpoint = { 'model': self.state_dict(), 'config': config_dict, 'extras': extras }
         torch.save(checkpoint, path)
 
     @staticmethod
@@ -395,24 +421,18 @@ class RelationalGraphNeuralNetwork(nn.Module):
         :param domain: The domain of the planning problem.
         :type domain: mimir.Domain
         :param path: The path to the model checkpoint file.
-        :type path: 'str'
+        :type path: 'Path | str'
         :param device: The device to load the model to (e.g., 'cpu' or 'cuda').
         :type device: 'torch.device'
         :return: A tuple containing the loaded model and a dictionary with additional information (e.g., optimizer state).
         :rtype: tuple[RelationalGraphNeuralNetwork, dict]
         """
-        checkpoint = torch.load(str(path), map_location=device)
-        hparams_dict = checkpoint['hparams']
+        # weights_only=False is needed due to unpickle errors related to our enums.
+        checkpoint = torch.load(path, map_location=device, weights_only=False)
+        config_dict = checkpoint['config']
         model_dict = checkpoint['model']
         extras_dict = checkpoint['extras']
-        model = RelationalGraphNeuralNetwork(domain, **hparams_dict)
-        incompatible_keys = model.load_state_dict(model_dict, strict=False)
-        # The models trained for the KR 2025 paper accidentally contained some unused keys, which are now removed.
-        # These keys show up as unexpected keys in the state dict, and can safely be ignored.
-        assert len(incompatible_keys.missing_keys) == 0, "Missing keys in the model state dict."
-        assert all(['eight_puzzle' in key for key in incompatible_keys.unexpected_keys]), "Unexpected keys in the model state dict."
-        # In older versions, the optimizer state was saved outside of the extras dictionary.
-        # The following code ensures compatibility with those versions.
-        if 'optimizer' in checkpoint:
-            extras_dict['optimizer'] = checkpoint['optimizer']
+        config = RelationalGraphNeuralNetworkConfig(domain=domain, **config_dict)
+        model = RelationalGraphNeuralNetwork(config)
+        model.load_state_dict(model_dict)
         return model.to(device), extras_dict
