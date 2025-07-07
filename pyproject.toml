@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pymimir-rgnn"
+version = "0.1.0"
+description = "Relational Graph Neural Network (R-GNN) package for Mimir based on PyTorch."
+readme = "README.md"
+requires-python = ">=3.8"
+license = "GPL-3.0-or-later"
+authors = [
+  { name = "Simon Stahlberg", email = "simon.stahlberg@gmail.com" }
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.8",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence"
+]
+dependencies = [
+  "torch>=2.6.0",
+  "pymimir>=0.13.40"
+]
+
+[project.urls]
+Homepage = "https://github.com/simon-stahlberg/mimir-rgnn"
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=6.0",
+  "build",
+  "twine"
+]
+
+[tool.pytest.ini_options]
+minversion = "6.0"
+addopts = "-ra -q"
+testpaths = ["tests"]
