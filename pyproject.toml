@@ -42,5 +42,9 @@ dev = [
 
 [tool.pytest.ini_options]
 minversion = "6.0"
-addopts = "-ra -q"
+addopts = "-ra -q -p no:warnings"
+filterwarnings = [
+    "ignore::UserWarning:torch.*",
+    "ignore::UserWarning"
+]
 testpaths = ["tests"]
