@@ -1,12 +1,14 @@
 import pymimir as mm
-import random
 import torch
 import torch.nn as nn
 
 from dataclasses import dataclass, field, fields
 from enum import Enum
 from pathlib import Path
-from typing import Union
+from typing import Any, Callable, Union
+
+from .encodings import InputType, OutputType, OutputNodeType, EncodedInput, encode_input, get_encoding
+from .modules import MLP, SumReadout
 
 
 class AggregationFunction(Enum):
@@ -21,20 +23,21 @@ class UpdateFunction(Enum):
 
 
 class MessageFunction(Enum):
-    MLP = 'mlp'
-
-
-class InputSignature(Enum):
-    State = 'state'
-    StateGoal = 'state_goal'
-    StateActions = 'state_actions'
-    StateActionsGoal = 'state_actions_goal'
+    PredicateMLP = 'predicate_mlp'
 
 
 @dataclass
 class RelationalGraphNeuralNetworkConfig:
     domain: 'mm.Domain' = field(
         metadata={'doc': 'The domain of the planning problem.'}
+    )
+
+    input_specification: 'tuple[InputType, ...]' = field(
+        metadata={'doc': 'The typed shape of the input. For example, (State, Goal) indicates that each instance must be a tuple containing a state followed by a goal.'}
+    )
+
+    output_specification: 'list[tuple[str, OutputType, OutputNodeType]]' = field(
+        metadata={'doc': 'The named outputs of the forward pass. For example, [("actor", Scalar, Objects), ("critic", Scalar, Objects)] defines two outputs with different readout functions: one for the actor and one for the critic in RL; however, they share weights to compute the embeddings.'}
     )
 
     embedding_size: 'int' = field(
@@ -49,11 +52,11 @@ class RelationalGraphNeuralNetworkConfig:
 
     message_aggregation: 'AggregationFunction' = field(
         default=AggregationFunction.HardMaximum,
-        metadata={'doc': 'The aggregation method for message passing. Options are "add", "mean", "smax", "hmax".'},
+        metadata={'doc': 'The aggregation method for message passing.'},
     )
 
     message_function: 'MessageFunction' = field(
-        default=MessageFunction.MLP,
+        default=MessageFunction.PredicateMLP,
         metadata={'doc': 'The type of the message function.'}
     )
 
@@ -78,79 +81,27 @@ class RelationalGraphNeuralNetworkConfig:
     )
 
 
-def _get_atom_name(atom: 'mm.GroundAtom', state: 'mm.State', is_goal_atom: 'bool'):
-    if is_goal_atom:
-        is_in_state = state.contains(atom)
-        return _get_predicate_name(atom.get_predicate(), True, is_in_state)
-    else:
-        return _get_predicate_name(atom.get_predicate(), False, True)
+class ForwardState:
+    def __init__(self, layer_index: 'int', readouts: 'dict[str, Callable[[], Any]]'):
+        self._layer_index = layer_index
+        self._readouts = readouts
 
+    def get_layer_index(self) -> 'int':
+        return self._layer_index
 
-def _get_predicate_name(predicate: 'mm.Predicate', is_goal_predicate: 'bool', is_true: 'bool'):
-    assert (not is_goal_predicate and is_true) or (is_goal_predicate)
-    if is_goal_predicate:
-        truth_value = 'true' if is_true else 'false'
-        return f'relation_{predicate.get_name()}_goal_{truth_value}'
-    else:
-        return f'relation_{predicate.get_name()}'
-
-
-def _get_action_name(action):
-    if  isinstance(action, mm.GroundAction):
-        return 'action_' + str(action.get_action().get_index())
-    elif isinstance(action, mm.Action):
-        return 'action_' + str(action.get_index())
-
-
-def _relations_to_tensors(term_id_groups: 'dict[str, list[int]]', device: 'torch.device') -> 'dict[str, torch.Tensor]':
-    result = {}
-    for key, value in term_id_groups.items():
-        result[key] = torch.tensor(value, dtype=torch.int, device=device, requires_grad=False)
-    return result
-
-
-class MLP(nn.Module):
-    def __init__(self, input_size: 'int', output_size: 'int'):
-        super().__init__()
-        self.input_size = input_size
-        self.output_size = output_size
-        self._inner = nn.Linear(input_size, input_size, True)
-        self._outer = nn.Linear(input_size, output_size, True)
-
-    def forward(self, input: 'torch.Tensor'):
-        return self._outer(nn.functional.mish(self._inner(input)))
-
-
-class SumReadout(nn.Module):
-    def __init__(self, input_size: 'int', output_size: 'int'):
-        super().__init__()
-        self._value = MLP(input_size, output_size)
-
-    def forward(self, node_embeddings: 'torch.Tensor', node_sizes: 'torch.Tensor') -> 'torch.Tensor':
-        cumsum_indices = node_sizes.cumsum(0) - 1
-        cumsum_states = node_embeddings.cumsum(0).index_select(0, cumsum_indices)
-        aggregated_embeddings = torch.cat((cumsum_states[0].view(1, -1), cumsum_states[1:] - cumsum_states[0:-1]))
-        return self._value(aggregated_embeddings)
-
+    def readout(self, name: 'str') -> Any:
+        return self._readouts[name]()
 
 class RelationMessagePassingBase(nn.Module):
     def __init__(self, config: 'RelationalGraphNeuralNetworkConfig'):
         super().__init__()
-        ignored_predicate_names = ['number']
-        predicates = [predicate for predicate in config.domain.get_predicates() if predicate.get_name() not in ignored_predicate_names]
-        relation_name_arities = []
-        relation_name_arities.extend([(_get_predicate_name(predicate, False, True), len(predicate.get_parameters())) for predicate in predicates])
-        relation_name_arities.extend([(_get_predicate_name(predicate, True, True), len(predicate.get_parameters())) for predicate in predicates])
-        relation_name_arities.extend([(_get_predicate_name(predicate, True, False), len(predicate.get_parameters())) for predicate in predicates])
-        relation_name_arities.extend([(_get_action_name(action), action.get_arity() + 1) for action in config.domain.get_actions()])
-        relation_name_arities.sort()  # Ensure that relations are always processed in the same order
         self._embedding_size = config.embedding_size
         self._relation_mlps = nn.ModuleDict()
-        for relation_name, relation_arity in relation_name_arities:
+        for relation_name, relation_arity in get_encoding(config.domain, config.input_specification):
             input_size = relation_arity * config.embedding_size
             output_size = relation_arity * config.embedding_size
             if (input_size > 0) and (output_size > 0):
-                assert config.message_function == MessageFunction.MLP, 'Other types of message functions are not implemented yet'
+                assert config.message_function == MessageFunction.PredicateMLP, 'Other types of message functions are not implemented yet'
                 self._relation_mlps[relation_name] = MLP(input_size, output_size)
         assert config.update_function == UpdateFunction.MLP, 'Other types of update functions are not implemented yet.'
         self._update = MLP(2 * config.embedding_size, config.embedding_size)
@@ -227,7 +178,7 @@ class SmoothMaximumRelationMessagePassing(RelationMessagePassingBase):
 class RelationalMessagePassingModule(nn.Module):
     def __init__(self, config: 'RelationalGraphNeuralNetworkConfig'):
         super().__init__()
-        self.config = config
+        self._config = config
         if config.message_aggregation == AggregationFunction.Add:
             self._relation_network = SumRelationMessagePassing(config)
         elif config.message_aggregation == AggregationFunction.Mean:
@@ -244,38 +195,76 @@ class RelationalMessagePassingModule(nn.Module):
             self._global_update = MLP(2 * config.embedding_size, config.embedding_size)
         if config.normalize_updates:
             self._update_normalization = nn.LayerNorm(config.embedding_size)
+        self._hooks = []
 
-    def forward(
-        self,
-        relations: 'dict[str, torch.Tensor]',
-        object_indices: 'torch.Tensor',
-        node_sizes: 'torch.Tensor',
-        random_readout: 'bool',
-    ) -> 'tuple[torch.Tensor, Union[torch.Tensor, None]]':
-        node_embeddings: 'torch.Tensor' = torch.zeros([node_sizes.sum(), self.config.embedding_size], dtype=torch.float, requires_grad=True, device=node_sizes.device)
-        if self.config.random_initialization:
+    def _notify_hooks(self, iteration: 'int', embeddings: 'torch.Tensor') -> None:
+        for hook in self._hooks:
+            hook(iteration, embeddings)
+
+    def add_hook(self, hook_func) -> 'None':
+        self._hooks.append(hook_func)
+
+    def clear_hooks(self) -> 'None':
+        self._hooks.clear()
+
+    def forward(self, input: 'EncodedInput') -> 'torch.Tensor':
+        device = input.node_sizes.device
+        node_embeddings: 'torch.Tensor' = torch.zeros([input.node_sizes.sum(), self._config.embedding_size], dtype=torch.float, requires_grad=True, device=device)
+        if self._config.random_initialization:
             rng_state = torch.get_rng_state()
             torch.manual_seed(1234)  # TODO: The seed should probably be the hash of the instance.
-            random_embeddings = torch.randn([object_indices.size(0), self.config.embedding_size], dtype=torch.float, requires_grad=True, device=node_sizes.device)
-            node_embeddings = node_embeddings.index_add(0, object_indices, random_embeddings)
+            random_embeddings = torch.randn([input.object_indices.size(0), self._config.embedding_size], dtype=torch.float, requires_grad=True, device=device)
+            node_embeddings = node_embeddings.index_add(0, input.object_indices, random_embeddings)
             torch.set_rng_state(rng_state)
-        random_iteration = random.randint(0, self.config.num_layers - 1) if random_readout else -1
-        random_node_embeddings = None
-        for iteration in range(self.config.num_layers):
-            relation_messages = self._relation_network(node_embeddings, relations)
-            if self.config.normalize_updates:
+        for iteration in range(self._config.num_layers):
+            relation_messages = self._relation_network(node_embeddings, input.flattened_relations)
+            if self._config.normalize_updates:
                 relation_messages = self._update_normalization(relation_messages)  # Normalize the magnitude of the message's values to be between -1 and 1.
-            if self.config.global_readout:
-                global_embedding = self._global_readout(node_embeddings, node_sizes)
-                global_messages = self._global_update(torch.cat((node_embeddings, global_embedding.repeat_interleave(node_sizes, dim=0)), 1))
-                if self.config.normalize_updates:
+            if self._config.global_readout:
+                global_embedding = self._global_readout(node_embeddings, input.node_sizes)
+                global_messages = self._global_update(torch.cat((node_embeddings, global_embedding.repeat_interleave(input.node_sizes, dim=0)), 1))
+                if self._config.normalize_updates:
                     global_messages = self._update_normalization(global_messages)
                 node_embeddings = node_embeddings + global_messages + relation_messages
             else:
                 node_embeddings = node_embeddings + relation_messages
-            if random_iteration == iteration:
-                random_node_embeddings = node_embeddings
-        return node_embeddings, random_node_embeddings
+            self._notify_hooks(iteration + 1, node_embeddings)
+        return node_embeddings
+
+
+class ObjectScalarReadout(nn.Module):
+    def __init__(self, config: 'RelationalGraphNeuralNetworkConfig'):
+        super().__init__()
+        self._object_readout = SumReadout(config.embedding_size, 1)
+
+    def forward(self, node_embeddings: 'torch.Tensor', input: 'EncodedInput'):
+        object_embeddings = node_embeddings.index_select(0, input.object_indices)
+        return self._object_readout(object_embeddings, input.object_sizes)
+
+
+class ObjectEmbeddingReadout(nn.Module):
+    def forward(self, node_embeddings: 'torch.Tensor', input: 'EncodedInput'):
+        return node_embeddings.index_select(0, input.object_indices)
+
+
+class ActionScalarReadout(nn.Module):
+    def __init__(self, config: 'RelationalGraphNeuralNetworkConfig'):
+        super().__init__()
+        self._object_readout = SumReadout(config.embedding_size, config.embedding_size)
+        self._action_value = MLP(2 * config.embedding_size, 1)
+
+    def forward(self, node_embeddings: 'torch.Tensor', input: 'EncodedInput'):
+        action_embeddings = node_embeddings.index_select(0, input.action_indices)
+        object_embeddings = node_embeddings.index_select(0, input.object_indices)
+        object_aggregation: 'torch.Tensor' = self._object_readout(object_embeddings, input.object_sizes)
+        object_aggregation = object_aggregation.repeat_interleave(input.action_sizes, dim=0)
+        values: 'torch.Tensor' = self._action_value(torch.cat((action_embeddings, object_aggregation), dim=1))
+        return [action_values.view(-1) for action_values in values.split(input.action_sizes.tolist())]
+
+
+class ActionEmbeddingReadout(nn.Module):
+    def forward(self, node_embeddings: 'torch.Tensor', input: 'EncodedInput'):
+        return node_embeddings.index_select(0, input.action_indices)
 
 
 class RelationalGraphNeuralNetwork(nn.Module):
@@ -287,97 +276,54 @@ class RelationalGraphNeuralNetwork(nn.Module):
         :type config: RelationalGraphNeuralNetworkConfig
         """
         super().__init__()
-        self.config = config
+        self._config = config
         self._mpnn_module = RelationalMessagePassingModule(config)
-        self._object_readout = SumReadout(config.embedding_size, config.embedding_size)
-        self._action_value = MLP(2 * config.embedding_size, 1)
+        self._readouts = nn.ModuleDict()
+        for output_name, output_type, output_node_type in config.output_specification:
+            readout = None
+            if (output_node_type == OutputNodeType.Objects) and (output_type == OutputType.Scalar):
+                readout = ObjectScalarReadout(config)
+            if (output_node_type == OutputNodeType.Objects) and (output_type == OutputType.Embeddings):
+                readout = ObjectEmbeddingReadout()
+            if (output_node_type == OutputNodeType.Action) and (output_type == OutputType.Scalar):
+                readout = ActionScalarReadout(config)
+            if (output_node_type == OutputNodeType.Action) and (output_type == OutputType.Embeddings):
+                readout = ActionEmbeddingReadout()
+            if readout is None:
+                raise NotImplementedError(f'Output "{output_type}" over "{output_node_type}" is not implemented yet.')
+            self._readouts.add_module(output_name, readout)
         self._dummy = nn.Parameter(torch.empty(0))
+        self._hooks = []
+
+    def _notify_hooks(self, forward_state: 'ForwardState') -> None:
+        for hook in self._hooks:
+            hook(forward_state)
+
+    def add_hook(self, hook_func: 'Callable[[ForwardState], None]') -> 'None':
+        self._hooks.append(hook_func)
+
+    def clear_hooks(self) -> 'None':
+        self._hooks.clear()
 
     def get_device(self):
         return self._dummy.device
 
-    def _create_q_values_input(self, q_value_arguments: 'list[tuple[mm.State, list[mm.GroundAction], mm.GroundConjunctiveCondition]]'):
-        # Get some stuff
-        device = self.get_device()
-        flattened_relations = {}
-        node_sizes = []
-        object_indices = []
-        object_sizes = []
-        action_indices = []
-        action_sizes = []
-        offset = 0
-        # Helper function for populating relations and sizes.
-        def add_atom_relation(atom: mm.GroundAtom, is_goal_atom: 'bool'):
-            relation_name = _get_atom_name(atom, state, is_goal_atom)
-            object_indices = [term.get_index() + offset for term in atom.get_terms()]
-            if relation_name not in flattened_relations: flattened_relations[relation_name] = object_indices
-            else: flattened_relations[relation_name].extend(object_indices)
-        # Construct input
-        for state, actions, goal_condition in q_value_arguments:
-            problem = state.get_problem()
-            objects = problem.get_objects()
-            num_objects = len(objects)
-            num_actions = len(actions)
-            # Add state relations
-            for atom in state.get_ground_atoms():
-                add_atom_relation(atom, False)
-            # Add goal relations
-            for ground_literal in goal_condition:
-                assert isinstance(ground_literal, mm.GroundLiteral), "Goal condition should contain ground literals."
-                assert ground_literal.get_polarity(), "Only positive literals are supported."
-                add_atom_relation(ground_literal.get_atom(), True)
-            # Add action relations
-            for index, action in enumerate(actions):
-                relation_name = _get_action_name(action)
-                action_id = num_objects + index
-                action_indices.append(action_id + offset)
-                term_ids = [action_id + offset] + [term.get_index() + offset for term in action.get_objects()]
-                if relation_name not in flattened_relations: flattened_relations[relation_name] = term_ids
-                else: flattened_relations[relation_name].extend(term_ids)
-            # Situation sizes
-            num_nodes = num_objects + num_actions
-            node_sizes.append(num_nodes)
-            # object_indices.extend(range(offset, offset + num_objects))  # Should be the the same thing.
-            object_indices.extend([object.get_index() + offset for object in objects])
-            object_sizes.append(num_objects)
-            action_sizes.append(num_actions)
-            offset += num_nodes
-        # Move input to device
-        flattened_relations = _relations_to_tensors(flattened_relations, device)
-        node_sizes = torch.tensor(node_sizes, dtype=torch.int, device=device, requires_grad=False)
-        object_indices = torch.tensor(object_indices, dtype=torch.int, device=device, requires_grad=False)
-        object_sizes = torch.tensor(object_sizes, dtype=torch.int, device=device, requires_grad=False)
-        action_indices = torch.tensor(action_indices, dtype=torch.int, device=device, requires_grad=False)
-        action_sizes = torch.tensor(action_sizes, dtype=torch.int, device=device, requires_grad=False)
-        return flattened_relations, node_sizes, object_indices, object_sizes, action_indices, action_sizes
-
-    def forward(self, q_value_arguments: 'list[tuple[mm.State, list[mm.GroundAction], mm.GroundConjunctiveCondition]]', random_readout: 'bool' = False) -> 'Union[list[torch.Tensor], tuple[list[torch.Tensor], list[torch.Tensor]]]':
-        """
-        Computes the Q-values for a list of states using the relational graph neural network.
-
-        :param states: A list of states for which to compute the Q-values.
-        :type states: list[mm.State]
-        :param random_readout: If True, returns the Q-values at a random layer as well.
-        :type random_readout: 'bool'
-        :return: A list of Q-values for each action in the states. If random_readout is True, returns a tuple of two lists: the Q-values for the final node embeddings and the Q-values for a random layer's node embeddings.
-        :rtype: Union[list[torch.Tensor], tuple[list[torch.Tensor], list[torch.Tensor]]]
-        """
+    def forward(self, x: 'list[tuple]') -> 'ForwardState':
         # Create input
-        input, node_sizes, object_indices, object_sizes, action_indices, action_sizes = self._create_q_values_input(q_value_arguments)
-        # Readout function
-        def q_value_readout(node_embeddings: 'torch.Tensor'):
-            action_embeddings = node_embeddings.index_select(0, action_indices)
-            object_embeddings = node_embeddings.index_select(0, object_indices)
-            object_aggregation = self._object_readout(object_embeddings, object_sizes)
-            object_aggregation: 'torch.Tensor' = object_aggregation.repeat_interleave(action_sizes, dim=0)
-            values: 'torch.Tensor' = self._action_value(torch.cat((action_embeddings, object_aggregation), dim=1))
-            return [action_values.view(-1) for action_values in values.split(action_sizes.tolist())]
+        input = encode_input(x, self._config.input_specification, self.get_device())
         # Pass the input through the MPNN module
-        final_node_embeddings, random_node_embeddings = self._mpnn_module.forward(input, object_indices, node_sizes, random_readout)
-        if random_readout:
-            return q_value_readout(final_node_embeddings), q_value_readout(random_node_embeddings)
-        else:
-            return q_value_readout(final_node_embeddings)
+        if len(self._hooks) > 0:
+            def hook_function(layer_index: 'int', node_embeddings: 'torch.Tensor') -> 'None':
+                nonlocal self, input
+                curried_readouts = { name: lambda: readout(node_embeddings, input) for name, readout in self._readouts.items() }
+                forward_state = ForwardState(layer_index, curried_readouts)
+                self._notify_hooks(forward_state)
+            self._mpnn_module.add_hook(hook_function)
+        node_embeddings = self._mpnn_module.forward(input)
+        if len(self._hooks) > 0:
+            self._mpnn_module.clear_hooks()
+        curried_readouts = { name: lambda: readout(node_embeddings, input) for name, readout in self._readouts.items() }
+        return ForwardState(self._config.num_layers, curried_readouts)
 
     def clone(self) -> 'RelationalGraphNeuralNetwork':
         """
@@ -386,7 +332,7 @@ class RelationalGraphNeuralNetwork(nn.Module):
         :return: A new instance of RelationalGraphNeuralNetwork with the same weights and hyperparameters.
         :rtype: RelationalGraphNeuralNetwork
         """
-        model_clone = RelationalGraphNeuralNetwork(self.config)
+        model_clone = RelationalGraphNeuralNetwork(self._config)
         model_clone.load_state_dict(self.state_dict())
         return model_clone.to(self.get_device())
 
@@ -408,7 +354,7 @@ class RelationalGraphNeuralNetwork(nn.Module):
         :param extras: Additional information to store in the checkpoint.
         :type extras: dict
         """
-        config_dict = { f.name: getattr(self.config, f.name) for f in fields(self.config) }
+        config_dict = { f.name: getattr(self._config, f.name) for f in fields(self._config) }
         del config_dict['domain']  # The domain is cannot be serialized.
         checkpoint = { 'model': self.state_dict(), 'config': config_dict, 'extras': extras }
         torch.save(checkpoint, path)

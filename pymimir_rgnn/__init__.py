@@ -1,10 +1,16 @@
-from .model import AggregationFunction, UpdateFunction, MessageFunction, InputSignature, RelationalGraphNeuralNetworkConfig, RelationalGraphNeuralNetwork
+from .model import AggregationFunction, UpdateFunction, MessageFunction, ForwardState, RelationalGraphNeuralNetworkConfig, RelationalGraphNeuralNetwork
+from .encodings import InputType, OutputType, OutputNodeType
 
 __all__ = [
+    # Model
     "AggregationFunction",
     "UpdateFunction",
     "MessageFunction",
-    "InputSignature",
+    "ForwardState",
     "RelationalGraphNeuralNetworkConfig",
-    "RelationalGraphNeuralNetwork"
+    "RelationalGraphNeuralNetwork",
+    # Encodings
+    "InputType",
+    "OutputType",
+    "OutputNodeType"
 ]

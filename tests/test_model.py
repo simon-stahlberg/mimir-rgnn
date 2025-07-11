@@ -24,6 +24,8 @@ def test_create_model(dom: str, agg: str, layers: int, size: int, gro: bool, nor
     domain = mm.Domain(domain_path)
     config = RelationalGraphNeuralNetworkConfig(
         domain=domain,
+        input_specification=(InputType.State, InputType.GroundActions, InputType.Goal),
+        output_specification=[('q_values', OutputType.Scalar, OutputNodeType.Action)],
         message_aggregation=agg,
         num_layers=layers,
         embedding_size=size,
@@ -52,6 +54,8 @@ def test_forward_model(dom: str, agg: str, layers: int, size: int, gro: bool, no
     problem = mm.Problem(domain, problem_path)
     config = RelationalGraphNeuralNetworkConfig(
         domain=domain,
+        input_specification=(InputType.State, InputType.GroundActions, InputType.Goal),
+        output_specification=[('q_values', OutputType.Scalar, OutputNodeType.Action)],
         message_aggregation=agg,
         num_layers=layers,
         embedding_size=size,
@@ -65,9 +69,10 @@ def test_forward_model(dom: str, agg: str, layers: int, size: int, gro: bool, no
     original_goal = problem.get_goal_condition()
     input = [(initial_state, initial_actions, original_goal)]
     output = model.forward(input)
-    assert isinstance(output, list)
-    assert len(output) == 1
-    assert len(output[0]) == len(initial_actions)
+    q_values = output.readout('q_values')
+    assert isinstance(q_values, list)
+    assert len(q_values) == 1
+    assert len(q_values[0]) == len(initial_actions)
 
 
 def test_save_and_load():
@@ -76,6 +81,8 @@ def test_save_and_load():
     # Create a model.
     config_1 = RelationalGraphNeuralNetworkConfig(
         domain=domain,
+        input_specification=(InputType.State, InputType.GroundActions, InputType.Goal),
+        output_specification=[('q_values', OutputType.Scalar, OutputNodeType.Action)],
         message_aggregation=AggregationFunction.Mean,
         num_layers=2,
         embedding_size=4,
@@ -91,5 +98,5 @@ def test_save_and_load():
     device = model_1.get_device()
     model_2, extras_2 = RelationalGraphNeuralNetwork.load(domain, 'test.pt', device)
     # Check that the loaded file matches the saved one, and that the extras are identical.
-    assert model_1.config == model_2.config
+    assert model_1._config == model_2._config
     assert extras_1 == extras_2
