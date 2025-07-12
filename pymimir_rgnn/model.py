@@ -228,7 +228,7 @@ class RelationalMessagePassingModule(nn.Module):
                 node_embeddings = node_embeddings + global_messages + relation_messages
             else:
                 node_embeddings = node_embeddings + relation_messages
-            self._notify_hooks(iteration + 1, node_embeddings)
+            self._notify_hooks(iteration, node_embeddings)
         return node_embeddings
 
 
@@ -279,7 +279,11 @@ class RelationalGraphNeuralNetwork(nn.Module):
         self._config = config
         self._mpnn_module = RelationalMessagePassingModule(config)
         self._readouts = nn.ModuleDict()
+        assert all([len(output) == 3 for output in config.output_specification]), 'The output specification must consist of a name, an output type, and an output node type.'
         for output_name, output_type, output_node_type in config.output_specification:
+            assert isinstance(output_name, str), 'The first part of the output specification must be a name.'
+            assert isinstance(output_type, OutputType), 'The second part of the output specification must be an output type.'
+            assert isinstance(output_node_type, OutputNodeType), 'The third part of the output specification must be an output node type.'
             readout = None
             if (output_node_type == OutputNodeType.Objects) and (output_type == OutputType.Scalar):
                 readout = ObjectScalarReadout(config)
@@ -323,7 +327,7 @@ class RelationalGraphNeuralNetwork(nn.Module):
         if len(self._hooks) > 0:
             self._mpnn_module.clear_hooks()
         curried_readouts = { name: lambda: readout(node_embeddings, input) for name, readout in self._readouts.items() }
-        return ForwardState(self._config.num_layers, curried_readouts)
+        return ForwardState(self._config.num_layers - 1, curried_readouts)
 
     def clone(self) -> 'RelationalGraphNeuralNetwork':
         """

@@ -74,6 +74,37 @@ def test_forward_model(dom: str, agg: str, layers: int, size: int, gro: bool, no
     assert len(q_values) == 1
     assert len(q_values[0]) == len(initial_actions)
 
+@pytest.mark.parametrize("domain_name", [('blocks'), ('gripper')])
+def test_forward_hook(domain_name: str):
+    domain_path = DATA_DIR / domain_name / 'domain.pddl'
+    problem_path = DATA_DIR / domain_name / 'problem.pddl'
+    domain = mm.Domain(domain_path)
+    problem = mm.Problem(domain, problem_path)
+    config = RelationalGraphNeuralNetworkConfig(
+        domain=domain,
+        input_specification=(InputType.State, InputType.Goal),
+        output_specification=[('value', OutputType.Scalar, OutputNodeType.Objects)],
+        num_layers=4,
+        embedding_size=8
+    )
+    model = RelationalGraphNeuralNetwork(config)
+    initial_state = problem.get_initial_state()
+    original_goal = problem.get_goal_condition()
+    input = [(initial_state, original_goal)]
+    hook_output = []
+    def hook_function(x: ForwardState):
+        layer_index = x.get_layer_index()
+        layer_readout = x.readout('value')
+        assert layer_index == len(hook_output)
+        assert layer_readout is not None
+        hook_output.append((layer_index, layer_readout))
+    model.add_hook(hook_function)
+    output = model.forward(input)
+    final_index = output.get_layer_index()
+    final_readout = output.readout('value')
+    assert hook_output[-1][0] == final_index
+    assert hook_output[-1][1] == final_readout
+
 
 def test_save_and_load():
     domain_path = DATA_DIR / 'blocks' / 'domain.pddl'

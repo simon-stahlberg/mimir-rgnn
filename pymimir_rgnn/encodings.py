@@ -68,6 +68,7 @@ def encode_input(input: 'list[tuple]', input_specification: 'tuple[InputType, ..
 
     # This code assumes no duplicates. This is checked in get_encoding().
     for input_index, input_type in enumerate(input_specification):
+        assert isinstance(input_type, InputType), f'The item at position {input_index} is not an input type.'
         if input_type == InputType.State:
             state_index = input_index
         elif input_type == InputType.Goal:
@@ -91,7 +92,9 @@ def encode_input(input: 'list[tuple]', input_specification: 'tuple[InputType, ..
     def add_state_relations(state: 'mm.State') -> 'int':
         nonlocal result, state_index
         if state_index is not None:
-            num_objects = len(state.get_problem().get_objects())
+            problem = state.get_problem()
+            domain = problem.get_domain()
+            num_objects = len(problem.get_objects()) + len(domain.get_constants())
             for atom in state.get_ground_atoms():
                 add_atom_relation(atom, state, False)
             result.object_indices.extend(range(result.node_count, result.node_count + num_objects))
@@ -145,6 +148,7 @@ def encode_input(input: 'list[tuple]', input_specification: 'tuple[InputType, ..
         assert len(instance) == len(input_specification), 'Mismatch between the length of an input instance and the input specification.'
         state: mm.State = instance[state_index]
         assert isinstance(state, mm.State), f'Mismatch between input and specification: expected a state at position {state_index}.'
+
         added_nodes = 0
         added_nodes += add_state_relations(state)
         added_nodes += add_goal_relations(state)
