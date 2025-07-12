@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pymimir-rgnn"
-version = "0.1.0"
+version = "0.1.1"
 description = "Relational Graph Neural Network (R-GNN) package for Mimir based on PyTorch."
 readme = "README.md"
 requires-python = ">=3.8"
