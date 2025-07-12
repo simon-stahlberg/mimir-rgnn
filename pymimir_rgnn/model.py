@@ -228,7 +228,7 @@ class ObjectScalarReadout(nn.Module):
 
     def forward(self, node_embeddings: 'torch.Tensor', input: 'EncodedInput'):
         object_embeddings = node_embeddings.index_select(0, input.object_indices)
-        return self._object_readout(object_embeddings, input.object_sizes)
+        return self._object_readout(object_embeddings, input.object_sizes).view(-1)
 
 
 class ObjectEmbeddingReadout(nn.Module):
