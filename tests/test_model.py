@@ -9,17 +9,17 @@ TEST_DIR = Path(__file__).parent
 DATA_DIR = TEST_DIR / 'data'
 
 
-@pytest.mark.parametrize("dom, agg, layers, size, gro, norm, rand", [
-    ('blocks', AggregationFunction.HardMaximum, 2, 2, False, False, False),
-    ('blocks', AggregationFunction.SmoothMaximum, 3, 3, False, False, True),
-    ('blocks', AggregationFunction.Mean, 4, 4, False, True, False),
-    ('blocks', AggregationFunction.Add, 5, 5, True, False, False),
-    ('gripper', AggregationFunction.HardMaximum, 2, 2, True, False, False),
-    ('gripper', AggregationFunction.SmoothMaximum, 3, 3, True, False, True),
-    ('gripper', AggregationFunction.Mean, 4, 4, True, True, False),
-    ('gripper', AggregationFunction.Add, 5, 5, True, True, False),
+@pytest.mark.parametrize("dom, agg, layers, size, gro, norm", [
+    ('blocks', AggregationFunction.HardMaximum, 2, 2, False, False),
+    ('blocks', AggregationFunction.SmoothMaximum, 3, 3, False, False),
+    ('blocks', AggregationFunction.Mean, 4, 4, False, True),
+    ('blocks', AggregationFunction.Add, 5, 5, True, False),
+    ('gripper', AggregationFunction.HardMaximum, 2, 2, True, False),
+    ('gripper', AggregationFunction.SmoothMaximum, 3, 3, True, False),
+    ('gripper', AggregationFunction.Mean, 4, 4, True, True),
+    ('gripper', AggregationFunction.Add, 5, 5, True, True),
 ])
-def test_create_model(dom: str, agg: str, layers: int, size: int, gro: bool, norm: bool, rand: bool):
+def test_create_model(dom: str, agg: str, layers: int, size: int, gro: bool, norm: bool):
     domain_path = DATA_DIR / dom / 'domain.pddl'
     domain = mm.Domain(domain_path)
     config = RelationalGraphNeuralNetworkConfig(
@@ -31,23 +31,22 @@ def test_create_model(dom: str, agg: str, layers: int, size: int, gro: bool, nor
         embedding_size=size,
         global_readout=gro,
         normalize_updates=norm,
-        random_initialization=rand
     )
     model = RelationalGraphNeuralNetwork(config)
     assert model is not None
 
 
-@pytest.mark.parametrize("dom, agg, layers, size, gro, norm, rand", [
-    ('blocks', AggregationFunction.HardMaximum, 2, 2, False, False, False),
-    ('blocks', AggregationFunction.SmoothMaximum, 3, 3, False, False, True),
-    ('blocks', AggregationFunction.Mean, 4, 4, False, True, False),
-    ('blocks', AggregationFunction.Add, 5, 5, True, False, False),
-    ('gripper', AggregationFunction.HardMaximum, 2, 2, True, False, False),
-    ('gripper', AggregationFunction.SmoothMaximum, 3, 3, True, False, True),
-    ('gripper', AggregationFunction.Mean, 4, 4, True, True, False),
-    ('gripper', AggregationFunction.Add, 5, 5, True, True, False),
+@pytest.mark.parametrize("dom, agg, layers, size, gro, norm", [
+    ('blocks', AggregationFunction.HardMaximum, 2, 2, False, False),
+    ('blocks', AggregationFunction.SmoothMaximum, 3, 3, False, False),
+    ('blocks', AggregationFunction.Mean, 4, 4, False, True),
+    ('blocks', AggregationFunction.Add, 5, 5, True, False),
+    ('gripper', AggregationFunction.HardMaximum, 2, 2, True, False),
+    ('gripper', AggregationFunction.SmoothMaximum, 3, 3, True, False),
+    ('gripper', AggregationFunction.Mean, 4, 4, True, True),
+    ('gripper', AggregationFunction.Add, 5, 5, True, True),
 ])
-def test_forward_model(dom: str, agg: str, layers: int, size: int, gro: bool, norm: bool, rand: bool):
+def test_forward_model(dom: str, agg: str, layers: int, size: int, gro: bool, norm: bool):
     domain_path = DATA_DIR / dom / 'domain.pddl'
     problem_path = DATA_DIR / dom / 'problem.pddl'
     domain = mm.Domain(domain_path)
@@ -61,7 +60,6 @@ def test_forward_model(dom: str, agg: str, layers: int, size: int, gro: bool, no
         embedding_size=size,
         global_readout=gro,
         normalize_updates=norm,
-        random_initialization=rand
     )
     model = RelationalGraphNeuralNetwork(config)
     initial_state = problem.get_initial_state()
@@ -106,6 +104,54 @@ def test_forward_hook(domain_name: str):
     assert hook_output[-1][1] == final_readout
 
 
+@pytest.mark.parametrize("domain_name", [('blocks'), ('gripper')])
+def test_forward_identical_batch(domain_name: str):
+    domain_path = DATA_DIR / domain_name / 'domain.pddl'
+    problem_path = DATA_DIR / domain_name / 'problem.pddl'
+    domain = mm.Domain(domain_path)
+    problem = mm.Problem(domain, problem_path)
+    config = RelationalGraphNeuralNetworkConfig(
+        domain=domain,
+        input_specification=(InputType.State, InputType.Goal),
+        output_specification=[('value', OutputNodeType.Objects, OutputValueType.Scalar)],
+        num_layers=4,
+        embedding_size=8
+    )
+    model = RelationalGraphNeuralNetwork(config)
+    initial_state = problem.get_initial_state()
+    original_goal = problem.get_goal_condition()
+    batch_size = 4
+    input = [(initial_state, original_goal)] * batch_size
+    output = model.forward(input)
+    readout = output.readout('value')
+    assert len(readout) == batch_size
+    assert readout.var() < 0.0000001
+
+
+@pytest.mark.parametrize("domain_name", [('blocks')])
+def test_forward_different_batch(domain_name: str):
+    domain_path = DATA_DIR / domain_name / 'domain.pddl'
+    problem_path = DATA_DIR / domain_name / 'problem.pddl'
+    domain = mm.Domain(domain_path)
+    problem = mm.Problem(domain, problem_path)
+    config = RelationalGraphNeuralNetworkConfig(
+        domain=domain,
+        input_specification=(InputType.State, InputType.Goal),
+        output_specification=[('value', OutputNodeType.Objects, OutputValueType.Scalar)],
+        num_layers=4,
+        embedding_size=8
+    )
+    model = RelationalGraphNeuralNetwork(config)
+    initial_state = problem.get_initial_state()
+    original_goal = problem.get_goal_condition()
+    different_goals = [mm.GroundConjunctiveCondition.new([literal], problem) for literal in original_goal]
+    input = [(initial_state, different_goal) for different_goal in different_goals]
+    output = model.forward(input)
+    readout = output.readout('value')
+    assert len(readout) == len(different_goals)
+    assert readout.var() > 0.0000001
+
+
 def test_save_and_load():
     domain_path = DATA_DIR / 'blocks' / 'domain.pddl'
     domain = mm.Domain(domain_path)
@@ -118,8 +164,7 @@ def test_save_and_load():
         num_layers=2,
         embedding_size=4,
         global_readout=True,
-        normalize_updates=False,
-        random_initialization=True
+        normalize_updates=False
     )
     model_1 = RelationalGraphNeuralNetwork(config_1)
     # Save the model with some extras.

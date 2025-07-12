@@ -75,11 +75,6 @@ class RelationalGraphNeuralNetworkConfig:
         metadata={'doc': 'Whether to use a global readout for the node embeddings.'}
     )
 
-    random_initialization: 'bool' = field(
-        default=False,
-        metadata={'doc': 'Whether to use random initialization for the node embeddings.'}
-    )
-
 
 class ForwardState:
     def __init__(self, layer_index: 'int', readouts: 'dict[str, Callable[[], Any]]'):
@@ -210,12 +205,6 @@ class RelationalMessagePassingModule(nn.Module):
     def forward(self, input: 'EncodedInput') -> 'torch.Tensor':
         device = input.node_sizes.device
         node_embeddings: 'torch.Tensor' = torch.zeros([input.node_sizes.sum(), self._config.embedding_size], dtype=torch.float, requires_grad=True, device=device)
-        if self._config.random_initialization:
-            rng_state = torch.get_rng_state()
-            torch.manual_seed(1234)  # TODO: The seed should probably be the hash of the instance.
-            random_embeddings = torch.randn([input.object_indices.size(0), self._config.embedding_size], dtype=torch.float, requires_grad=True, device=device)
-            node_embeddings = node_embeddings.index_add(0, input.object_indices, random_embeddings)
-            torch.set_rng_state(rng_state)
         for iteration in range(self._config.num_layers):
             relation_messages = self._relation_network(node_embeddings, input.flattened_relations)
             if self._config.normalize_updates:
