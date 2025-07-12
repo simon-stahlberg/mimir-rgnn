@@ -7,7 +7,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Union
 
-from .encodings import InputType, OutputType, OutputNodeType, EncodedInput, encode_input, get_encoding
+from .encodings import InputType, OutputValueType, OutputNodeType, EncodedInput, encode_input, get_encoding
 from .modules import MLP, SumReadout
 
 
@@ -36,7 +36,7 @@ class RelationalGraphNeuralNetworkConfig:
         metadata={'doc': 'The typed shape of the input. For example, (State, Goal) indicates that each instance must be a tuple containing a state followed by a goal.'}
     )
 
-    output_specification: 'list[tuple[str, OutputType, OutputNodeType]]' = field(
+    output_specification: 'list[tuple[str, OutputNodeType, OutputValueType]]' = field(
         metadata={'doc': 'The named outputs of the forward pass. For example, [("actor", Scalar, Objects), ("critic", Scalar, Objects)] defines two outputs with different readout functions: one for the actor and one for the critic in RL; however, they share weights to compute the embeddings.'}
     )
 
@@ -280,21 +280,21 @@ class RelationalGraphNeuralNetwork(nn.Module):
         self._mpnn_module = RelationalMessagePassingModule(config)
         self._readouts = nn.ModuleDict()
         assert all([len(output) == 3 for output in config.output_specification]), 'The output specification must consist of a name, an output type, and an output node type.'
-        for output_name, output_type, output_node_type in config.output_specification:
+        for output_name, output_node_type, output_value_type in config.output_specification:
             assert isinstance(output_name, str), 'The first part of the output specification must be a name.'
-            assert isinstance(output_type, OutputType), 'The second part of the output specification must be an output type.'
             assert isinstance(output_node_type, OutputNodeType), 'The third part of the output specification must be an output node type.'
+            assert isinstance(output_value_type, OutputValueType), 'The second part of the output specification must be an output type.'
             readout = None
-            if (output_node_type == OutputNodeType.Objects) and (output_type == OutputType.Scalar):
+            if (output_node_type == OutputNodeType.Objects) and (output_value_type == OutputValueType.Scalar):
                 readout = ObjectScalarReadout(config)
-            if (output_node_type == OutputNodeType.Objects) and (output_type == OutputType.Embeddings):
+            if (output_node_type == OutputNodeType.Objects) and (output_value_type == OutputValueType.Embeddings):
                 readout = ObjectEmbeddingReadout()
-            if (output_node_type == OutputNodeType.Action) and (output_type == OutputType.Scalar):
+            if (output_node_type == OutputNodeType.Action) and (output_value_type == OutputValueType.Scalar):
                 readout = ActionScalarReadout(config)
-            if (output_node_type == OutputNodeType.Action) and (output_type == OutputType.Embeddings):
+            if (output_node_type == OutputNodeType.Action) and (output_value_type == OutputValueType.Embeddings):
                 readout = ActionEmbeddingReadout()
             if readout is None:
-                raise NotImplementedError(f'Output "{output_type}" over "{output_node_type}" is not implemented yet.')
+                raise NotImplementedError(f'Output "{output_value_type}" over "{output_node_type}" is not implemented yet.')
             self._readouts.add_module(output_name, readout)
         self._dummy = nn.Parameter(torch.empty(0))
         self._hooks = []

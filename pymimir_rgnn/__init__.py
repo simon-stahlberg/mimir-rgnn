@@ -1,5 +1,5 @@
 from .model import AggregationFunction, UpdateFunction, MessageFunction, ForwardState, RelationalGraphNeuralNetworkConfig, RelationalGraphNeuralNetwork
-from .encodings import InputType, OutputType, OutputNodeType
+from .encodings import InputType, OutputValueType, OutputNodeType
 
 __all__ = [
     # Model
@@ -11,6 +11,6 @@ __all__ = [
     "RelationalGraphNeuralNetwork",
     # Encodings
     "InputType",
-    "OutputType",
+    "OutputValueType",
     "OutputNodeType"
 ]

@@ -25,7 +25,7 @@ def test_create_model(dom: str, agg: str, layers: int, size: int, gro: bool, nor
     config = RelationalGraphNeuralNetworkConfig(
         domain=domain,
         input_specification=(InputType.State, InputType.GroundActions, InputType.Goal),
-        output_specification=[('q_values', OutputType.Scalar, OutputNodeType.Action)],
+        output_specification=[('q_values', OutputNodeType.Action, OutputValueType.Scalar)],
         message_aggregation=agg,
         num_layers=layers,
         embedding_size=size,
@@ -55,7 +55,7 @@ def test_forward_model(dom: str, agg: str, layers: int, size: int, gro: bool, no
     config = RelationalGraphNeuralNetworkConfig(
         domain=domain,
         input_specification=(InputType.State, InputType.GroundActions, InputType.Goal),
-        output_specification=[('q_values', OutputType.Scalar, OutputNodeType.Action)],
+        output_specification=[('q_values', OutputNodeType.Action, OutputValueType.Scalar)],
         message_aggregation=agg,
         num_layers=layers,
         embedding_size=size,
@@ -83,7 +83,7 @@ def test_forward_hook(domain_name: str):
     config = RelationalGraphNeuralNetworkConfig(
         domain=domain,
         input_specification=(InputType.State, InputType.Goal),
-        output_specification=[('value', OutputType.Scalar, OutputNodeType.Objects)],
+        output_specification=[('value', OutputNodeType.Objects, OutputValueType.Scalar)],
         num_layers=4,
         embedding_size=8
     )
@@ -113,7 +113,7 @@ def test_save_and_load():
     config_1 = RelationalGraphNeuralNetworkConfig(
         domain=domain,
         input_specification=(InputType.State, InputType.GroundActions, InputType.Goal),
-        output_specification=[('q_values', OutputType.Scalar, OutputNodeType.Action)],
+        output_specification=[('q_values', OutputNodeType.Action, OutputValueType.Scalar)],
         message_aggregation=AggregationFunction.Mean,
         num_layers=2,
         embedding_size=4,

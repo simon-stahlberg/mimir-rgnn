@@ -14,7 +14,7 @@ class InputType(Enum):
     TransitionEffects = 'effects'
 
 
-class OutputType(Enum):
+class OutputValueType(Enum):
     Scalar = 'scalar'
     Embeddings = 'embeddings'
 
