@@ -95,7 +95,7 @@ def encode_input(input: 'list[tuple]', input_specification: 'tuple[InputType, ..
             problem = state.get_problem()
             domain = problem.get_domain()
             num_objects = len(problem.get_objects()) + len(domain.get_constants())
-            for atom in state.get_ground_atoms():
+            for atom in state.get_atoms():
                 add_atom_relation(atom, state, False)
             result.object_indices.extend(range(result.node_count, result.node_count + num_objects))
             result.object_sizes.append(num_objects)
@@ -145,6 +145,7 @@ def encode_input(input: 'list[tuple]', input_specification: 'tuple[InputType, ..
 
     # Construct input
     for instance in input:
+        assert isinstance(instance, tuple), 'Input instance must be a tuple.'
         assert len(instance) == len(input_specification), 'Mismatch between the length of an input instance and the input specification.'
         state: mm.State = instance[state_index]
         assert isinstance(state, mm.State), f'Mismatch between input and specification: expected a state at position {state_index}.'

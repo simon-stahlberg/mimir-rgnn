@@ -303,6 +303,7 @@ class RelationalGraphNeuralNetwork(nn.Module):
 
     def forward(self, x: 'list[tuple]') -> 'ForwardState':
         # Create input
+        assert isinstance(x, list), 'Expected input to be a list.'
         input = encode_input(x, self._config.input_specification, self.get_device())
         # Pass the input through the MPNN module
         if len(self._hooks) > 0:
