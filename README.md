@@ -1,10 +1,10 @@
-# Mimir - Relational Graph Neural Networks
+# Mimir-RGNN
 
-Mimir is a Python library that implements Relational Graph Neural Networks (R-GNN) using PyTorch and Mimir, offering a streamlined interface for building and using these networks.
+Mimir-RGNN is a Python library that implements Relational Graph Neural Networks (R-GNN) using PyTorch and Mimir, offering a streamlined interface for building and using these networks.
 
 ## API
 
-One notable feature of Mimir is its ability to define both input and output specifications directly during model construction.
+One notable feature of Mimir-RGNN is its ability to define both input and output specifications directly during model construction.
 This allows for tailored configurations, as demonstrated below:
 
 ```python
@@ -33,7 +33,7 @@ This flexibility supports various applications, including reinforcement learning
 
 ### Installation
 
-Mimir is available on PyPi and can be installed via pip:
+Mimir-RGNN is available on PyPi and can be installed via pip:
 
 ```console
 pip install pymimir-rgnn
