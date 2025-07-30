@@ -41,6 +41,6 @@ pip install pymimir-rgnn
 
 ### Examples
 
-For practical usage examples, refer to our GitHub repository:
+For an example, refer to the GitHub repository:
 
 [R-GNN Example Project](https://github.com/simon-stahlberg/relational-neural-network-python/)

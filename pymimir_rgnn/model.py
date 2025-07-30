@@ -292,6 +292,15 @@ class RelationalGraphNeuralNetwork(nn.Module):
         for hook in self._hooks:
             hook(forward_state)
 
+    def get_config(self) -> RelationalGraphNeuralNetworkConfig:
+        return self._config
+
+    def get_layer_count(self) -> int:
+        return self._config.num_layers
+
+    def set_layer_count(self, count: int) -> None:
+        self._config.num_layers = count
+
     def add_hook(self, hook_func: Callable[[ForwardState], None]) -> None:
         self._hooks.append(hook_func)
 
