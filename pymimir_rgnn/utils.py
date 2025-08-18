@@ -37,3 +37,30 @@ def relations_to_tensors(term_id_groups: dict[str, list[int]], device: torch.dev
     for key, value in term_id_groups.items():
         result[key] = torch.tensor(value, dtype=torch.int, device=device, requires_grad=False)
     return result
+
+
+def gumbel_sigmoid(logits, tau=1.0, hard=False, eps=1e-10):
+    """
+    Binary Concrete / Gumbel-Sigmoid with double noise trick.
+    Args:
+        logits: Tensor of pre-sigmoid values.
+        tau: Temperature (lower -> harder samples).
+        hard: If True, returns hard {0,1} but with straight-through gradients.
+    """
+    # Sample two Gumbel noises
+    u1 = torch.rand_like(logits)
+    u2 = torch.rand_like(logits)
+    g1 = -torch.log(-torch.log(u1 + eps) + eps)
+    g2 = -torch.log(-torch.log(u2 + eps) + eps)
+
+    # Double noise trick
+    y_soft = torch.sigmoid((logits + g1 - g2) / tau)
+
+    if hard:
+        # Straight-through binarization
+        y_hard = (y_soft > 0.5).float()
+        y = y_hard.detach() - y_soft.detach() + y_soft
+    else:
+        y = y_soft
+
+    return y

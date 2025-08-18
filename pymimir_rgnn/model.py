@@ -9,6 +9,7 @@ from typing import Any, Callable, Union
 
 from .encodings import InputType, OutputValueType, OutputNodeType, TensorInput, encode_input, get_encoding  # type: ignore
 from .modules import MLP, SumReadout
+from .utils import gumbel_sigmoid
 
 
 class AggregationFunction(Enum):
@@ -73,6 +74,16 @@ class RelationalGraphNeuralNetworkConfig:
     global_readout: bool = field(
         default=False,
         metadata={'doc': 'Whether to use a global readout for the node embeddings.'}
+    )
+
+    residual_updates: bool = field(
+        default=True,
+        metadata={'doc': 'Whether to use residual updates for the node embeddings.'}
+    )
+
+    binarize_updates: bool = field(
+        default=False,
+        metadata={'doc': 'Whether to binarize the updates for the node embeddings.'}
     )
 
 
@@ -206,17 +217,20 @@ class RelationalMessagePassingModule(nn.Module):
         device = input.node_sizes.device
         node_embeddings: torch.Tensor = torch.zeros([int(input.node_sizes.sum()), self._config.embedding_size], dtype=torch.float, requires_grad=True, device=device)
         for iteration in range(self._config.num_layers):
-            relation_messages: torch.Tensor = self._relation_network(node_embeddings, input.flattened_relations)
+            next_node_embeddings: torch.Tensor = self._relation_network(node_embeddings, input.flattened_relations)
             if self._config.normalize_updates:
-                relation_messages = self._update_normalization(relation_messages)  # Normalize the magnitude of the message's values to be between -1 and 1.
+                next_node_embeddings = self._update_normalization(next_node_embeddings)
             if self._config.global_readout:
-                global_embedding = self._global_readout(node_embeddings, input.node_sizes)
+                global_embedding: torch.Tensor = self._global_readout(node_embeddings, input.node_sizes)
                 global_messages: torch.Tensor = self._global_update(torch.cat((node_embeddings, global_embedding.repeat_interleave(input.node_sizes, dim=0)), 1))
                 if self._config.normalize_updates:
                     global_messages = self._update_normalization(global_messages)
-                node_embeddings = node_embeddings + global_messages + relation_messages
-            else:
-                node_embeddings = node_embeddings + relation_messages
+                next_node_embeddings = global_messages + next_node_embeddings
+            if self._config.binarize_updates:
+                next_node_embeddings = gumbel_sigmoid(next_node_embeddings, hard=True)
+            if self._config.residual_updates:
+                next_node_embeddings = node_embeddings + next_node_embeddings
+            node_embeddings = next_node_embeddings
             self._notify_hooks(iteration, node_embeddings)
         return node_embeddings
 
