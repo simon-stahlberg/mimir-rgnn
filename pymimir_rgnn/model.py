@@ -38,7 +38,7 @@ class RelationalGraphNeuralNetworkConfig:
     )
 
     output_specification: list[tuple[str, OutputNodeType, OutputValueType]] = field(
-        metadata={'doc': 'The named outputs of the forward pass. For example, [("actor", Scalar, Objects), ("critic", Scalar, Objects)] defines two outputs with different readout functions: one for the actor and one for the critic in RL; however, they share weights to compute the embeddings.'}
+        metadata={'doc': 'The named outputs of the forward pass. For example, [("actor", OutputNodeType.Action, OutputValueType.Scalar), ("critic", OutputNodeType.Action, OutputValueType.Scalar)] defines two outputs with different readout functions: one for the actor and one for the critic in RL; however, they share weights to compute the embeddings.'}
     )
 
     embedding_size: int = field(
