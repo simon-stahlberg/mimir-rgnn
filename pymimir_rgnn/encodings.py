@@ -3,7 +3,7 @@ import torch
 
 from enum import Enum
 
-from .utils import get_action_name, get_action_pair_name, get_atom_name, get_effect_name, get_predicate_name, relations_to_tensors
+from .utils import get_action_name, get_atom_name, get_effect_name, get_predicate_name, relations_to_tensors
 
 
 class InputType(Enum):
@@ -60,7 +60,6 @@ def get_encoding(domain: mm.Domain, input_specification: tuple[InputType, ...]) 
             relations.extend([(get_predicate_name(predicate, True, True), predicate.get_arity()) for predicate in predicates])
         elif input_type == InputType.GroundActions:
             relations.extend([(get_action_name(action), action.get_arity() + 1) for action in domain.get_actions()])
-            relations.extend([(get_action_pair_name(action), 2) for action in domain.get_actions()])
         elif input_type == InputType.TransitionEffects:
             relations.extend([(get_effect_name(predicate, True), predicate.get_arity() + 1) for predicate in predicates])
             relations.extend([(get_effect_name(predicate, False), predicate.get_arity() + 1) for predicate in predicates])
@@ -136,13 +135,11 @@ def encode_input(input: list[tuple], input_specification: tuple[InputType, ...],
             actions: list[mm.GroundAction] = instance[actions_index]  # type: ignore
             assert isinstance(actions, list), f'Mismatch between input and specification: expected a list at position {actions_index}.'
             num_actions = len(actions)
-            related_actions: dict[str, list[int]] = {}
             for action_index, action in enumerate(actions):  # type: ignore
                 assert isinstance(action, mm.GroundAction), f'Mismatch between input and specification: expected a ground action in the list at position {action_index}.'
                 problem = action.get_problem()
                 num_objects = len(problem.get_objects())
                 relation_name = get_action_name(action)
-                action_pair_name = get_action_pair_name(action)
                 action_local_id = num_objects + action_index
                 action_global_id = action_local_id + intermediate.node_count
                 term_ids = [action_global_id] + [term.get_index() + intermediate.node_count for term in action.get_objects()]
@@ -152,18 +149,6 @@ def encode_input(input: list[tuple], input_specification: tuple[InputType, ...],
                 else: relations[relation_name].extend(term_ids)
                 # Each action yield a new node, remember the id.
                 intermediate.action_indices.append(action_global_id)
-                # Store action id together with other ids using the same action schema.
-                if action_pair_name not in related_actions: related_actions[action_pair_name] = [action_global_id]
-                else: related_actions[action_pair_name].append(action_global_id)
-            # For each action schema, add all possible distinct pairs as relations.
-            # This allows these actions to negotiate easier.
-            relations = intermediate.flattened_relations
-            for relation_name, indices in related_actions.items():
-                for idx_i, id_i in enumerate(indices):
-                    for idx_j, id_j in enumerate(indices):
-                        if idx_i != idx_j:
-                            if relation_name not in relations: relations[relation_name] = [id_i, id_j]
-                            else: relations[relation_name].extend([id_i, id_j])
             intermediate.action_sizes.append(num_actions)
             return num_actions
         return 0

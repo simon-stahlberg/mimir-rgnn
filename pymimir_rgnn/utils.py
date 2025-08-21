@@ -32,10 +32,6 @@ def get_action_name(action: mm.Action | mm.GroundAction) -> str:
         raise RuntimeError('Argument is not an action.')
 
 
-def get_action_pair_name(action: mm.Action | mm.GroundAction) -> str:
-    return get_action_name(action) + '_pair'
-
-
 def relations_to_tensors(term_id_groups: dict[str, list[int]], device: torch.device) -> dict[str, torch.Tensor]:
     result: dict[str, torch.Tensor] = {}
     for key, value in term_id_groups.items():
