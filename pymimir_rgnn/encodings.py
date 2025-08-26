@@ -90,7 +90,10 @@ def encode_input(input: list[tuple], input_specification: tuple[InputType, ...],
             actions_index = input_index
         elif input_type == InputType.TransitionEffects:
             effects_index = input_index
+
+    # Validate specification.
     assert state_index is not None, 'The input specification must contain a state.'
+    assert actions_index is None or effects_index is None, "At most one of GroundActions and TransitionEffects can be in the input specification."
 
     # Functions for populating the result.
     def add_atom_relation(atom: mm.GroundAtom, state: mm.State, is_goal_atom: bool):
@@ -100,7 +103,7 @@ def encode_input(input: list[tuple], input_specification: tuple[InputType, ...],
         if relation_name not in intermediate.flattened_relations: intermediate.flattened_relations[relation_name] = object_indices
         else: intermediate.flattened_relations[relation_name].extend(object_indices)
 
-    def add_state_relations(state: mm.State) -> int:
+    def add_state_relations(instance, state: mm.State) -> int:
         nonlocal intermediate, state_index
         if state_index is not None:
             problem = state.get_problem()
@@ -113,8 +116,8 @@ def encode_input(input: list[tuple], input_specification: tuple[InputType, ...],
             return num_objects
         return 0
 
-    def add_goal_relations(state: mm.State) -> int:
-        nonlocal intermediate, goal_index, instance
+    def add_goal_relations(instance, state: mm.State) -> int:
+        nonlocal intermediate, goal_index
         if goal_index is not None:
             goal: mm.GroundConjunctiveCondition = instance[goal_index]  # type: ignore
             assert isinstance(goal, mm.GroundConjunctiveCondition), f'Mismatch between input and specification: expected a goal at position {goal_index}.'
@@ -124,7 +127,7 @@ def encode_input(input: list[tuple], input_specification: tuple[InputType, ...],
                 add_atom_relation(literal.get_atom(), state, True)
         return 0
 
-    def add_successor_relations() -> int:
+    def add_successor_relations(instance) -> int:
         if successors_index is not None:
             raise NotImplementedError('State successors are not supported yet.')
         return 0
@@ -147,15 +150,35 @@ def encode_input(input: list[tuple], input_specification: tuple[InputType, ...],
                 relations = intermediate.flattened_relations
                 if relation_name not in relations: relations[relation_name] = term_ids
                 else: relations[relation_name].extend(term_ids)
-                # Each action yield a new node, remember the id.
+                # Each action adds a new node, remember the id.
                 intermediate.action_indices.append(action_global_id)
             intermediate.action_sizes.append(num_actions)
             return num_actions
         return 0
 
-    def add_effect_relations() -> int:
+    def add_effect_relations(instance, problem: mm.Problem) -> int:
+        nonlocal intermediate, effects_index
         if effects_index is not None:
-            raise NotImplementedError('Transition effects are not supported yet.')
+            effects_list: list[list[mm.GroundLiteral]] = instance[effects_index]
+            assert isinstance(effects_list, list), 'Mismatch between input and specification: expected a list of lists of ground literals.'
+            num_objects = len(problem.get_objects())
+            num_transitions = len(effects_list)
+            for transition_index, effects in enumerate(effects_list):
+                assert isinstance(effects, list), 'Mismatch between input and specification: expected a list of lists of ground literals.'
+                transition_local_id = num_objects + transition_index
+                transition_global_id = transition_local_id + intermediate.node_count
+                for effect in effects:
+                    assert isinstance(effect, mm.GroundLiteral), 'Mismatch between input and specification: expected a list of lists of ground literals.'
+                    effect_name = get_effect_name(effect.get_atom().get_predicate(), effect.get_polarity())
+                    term_ids = [transition_global_id] + [term.get_index() + intermediate.node_count for term in effect.get_atom().get_terms()]
+                    # Add to input relations.
+                    relations = intermediate.flattened_relations
+                    if effect_name not in relations: relations[effect_name] = term_ids
+                    else: relations[effect_name].extend(term_ids)
+                # Each transition adds a new node, remember the id.
+                intermediate.action_indices.append(transition_global_id)
+            intermediate.action_sizes.append(num_transitions)
+            return num_transitions
         return 0
 
     # Construct input
@@ -163,14 +186,15 @@ def encode_input(input: list[tuple], input_specification: tuple[InputType, ...],
         assert isinstance(instance, tuple), 'Input instance must be a tuple.'
         assert len(instance) == len(input_specification), 'Mismatch between the length of an input instance and the input specification.'  # type: ignore
         state: mm.State = instance[state_index]  # type: ignore
+        problem: mm.Problem = state.get_problem()
         assert isinstance(state, mm.State), f'Mismatch between input and specification: expected a state at position {state_index}.'
 
         added_nodes = 0
-        added_nodes += add_state_relations(state)
-        added_nodes += add_goal_relations(state)
-        added_nodes += add_successor_relations()
+        added_nodes += add_state_relations(instance, state)
+        added_nodes += add_goal_relations(instance, state)
+        added_nodes += add_successor_relations(instance)
         added_nodes += add_action_relations(instance)
-        added_nodes += add_effect_relations()
+        added_nodes += add_effect_relations(instance, problem)
         intermediate.node_sizes.append(added_nodes)
         intermediate.node_count += added_nodes
 
