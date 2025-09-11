@@ -3,7 +3,7 @@ import torch
 
 from enum import Enum
 
-from .utils import get_action_name, get_atom_name, get_effect_name, get_predicate_name, relations_to_tensors
+from .utils import get_action_name, get_atom_name, get_effect_name, get_effect_relation_name, get_predicate_name, relations_to_tensors
 
 
 class InputType(Enum):
@@ -61,8 +61,12 @@ def get_encoding(domain: mm.Domain, input_specification: tuple[InputType, ...]) 
         elif input_type == InputType.GroundActions:
             relations.extend([(get_action_name(action), action.get_arity() + 1) for action in domain.get_actions()])
         elif input_type == InputType.TransitionEffects:
-            relations.extend([(get_effect_name(predicate, True), predicate.get_arity() + 1) for predicate in predicates])
-            relations.extend([(get_effect_name(predicate, False), predicate.get_arity() + 1) for predicate in predicates])
+            relations.extend([(get_effect_name(predicate, True, False), predicate.get_arity() + 1) for predicate in predicates])
+            relations.extend([(get_effect_name(predicate, False, False), predicate.get_arity() + 1) for predicate in predicates])
+            relations.extend([(get_effect_name(predicate, True, True), predicate.get_arity() + 1) for predicate in predicates])
+            relations.extend([(get_effect_name(predicate, False, True), predicate.get_arity() + 1) for predicate in predicates])
+            relations.append((get_effect_relation_name(), 2))
+
     relations.sort()  # Ensure that the output is deterministic.
     return relations
 
@@ -161,6 +165,7 @@ def encode_input(input: list[tuple], input_specification: tuple[InputType, ...],
         if effects_index is not None:
             effects_list: list[list[mm.GroundLiteral]] = instance[effects_index]
             assert isinstance(effects_list, list), 'Mismatch between input and specification: expected a list of lists of ground literals.'
+            goal_condition = problem.get_goal_condition()
             num_objects = len(problem.get_objects())
             num_transitions = len(effects_list)
             for transition_index, effects in enumerate(effects_list):
@@ -169,12 +174,18 @@ def encode_input(input: list[tuple], input_specification: tuple[InputType, ...],
                 transition_global_id = transition_local_id + intermediate.node_count
                 for effect in effects:
                     assert isinstance(effect, mm.GroundLiteral), 'Mismatch between input and specification: expected a list of lists of ground literals.'
-                    effect_name = get_effect_name(effect.get_atom().get_predicate(), effect.get_polarity())
+                    effect_name = get_effect_name(effect.get_atom().get_predicate(), effect.get_polarity(), False)
                     term_ids = [transition_global_id] + [term.get_index() + intermediate.node_count for term in effect.get_atom().get_terms()]
-                    # Add to input relations.
                     relations = intermediate.flattened_relations
                     if effect_name not in relations: relations[effect_name] = term_ids
                     else: relations[effect_name].extend(term_ids)
+                    # Add literals stating how this transition affects the goal.
+                    if any(x == effect.get_atom() for x in goal_condition):
+                        goal_effect_name = get_effect_name(effect.get_atom().get_predicate(), effect.get_polarity(), True)
+                        goal_term_ids = [transition_global_id] + [term.get_index() + intermediate.node_count for term in effect.get_atom().get_terms()]
+                        relations = intermediate.flattened_relations
+                        if goal_effect_name not in relations: relations[goal_effect_name] = goal_term_ids
+                        else: relations[goal_effect_name].extend(goal_term_ids)
                 # Each transition adds a new node, remember the id.
                 intermediate.action_indices.append(transition_global_id)
             intermediate.action_sizes.append(num_transitions)

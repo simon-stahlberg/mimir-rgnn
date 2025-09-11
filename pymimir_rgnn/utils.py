@@ -19,8 +19,12 @@ def get_predicate_name(predicate: mm.Predicate, is_goal_predicate: bool, is_true
         return f'relation_{predicate.get_name()}'
 
 
-def get_effect_name(predicate: mm.Predicate, positive: bool) -> str:
-    return predicate.get_name() + ('_pos' if positive else '_neg')
+def get_effect_name(predicate: mm.Predicate, positive: bool, affects_goal: bool) -> str:
+    return predicate.get_name() + ('_pos' if positive else '_neg') + ('_goal' if affects_goal else '')
+
+
+def get_effect_relation_name() -> str:
+    return 'effect_relation'
 
 
 def get_action_name(action: mm.Action | mm.GroundAction) -> str:
