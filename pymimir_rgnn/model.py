@@ -342,14 +342,18 @@ class RelationalGraphNeuralNetwork(nn.Module):
         if len(self._hooks) > 0:
             def hook_function(layer_index: 'int', node_embeddings: 'torch.Tensor') -> 'None':
                 nonlocal self, input
-                curried_readouts = { name: (lambda r=readout: r(node_embeddings, input)) for name, readout in self._readouts.items() }
+                def make_readout_func(readout: Any) -> Callable[[], Any]:
+                    return lambda: readout(node_embeddings, input)
+                curried_readouts = { name: make_readout_func(readout) for name, readout in self._readouts.items() }
                 forward_state = ForwardState(layer_index, curried_readouts)
                 self._notify_hooks(forward_state)
             self._mpnn_module.add_hook(hook_function)
         node_embeddings = self._mpnn_module.forward(input)
         if len(self._hooks) > 0:
             self._mpnn_module.clear_hooks()
-        curried_readouts = { name: (lambda r=readout: r(node_embeddings, input)) for name, readout in self._readouts.items() }
+        def make_readout_func(readout: Any) -> Callable[[], Any]:
+            return lambda: readout(node_embeddings, input)
+        curried_readouts = { name: make_readout_func(readout) for name, readout in self._readouts.items() }
         return ForwardState(self._config.num_layers - 1, curried_readouts)
 
     def clone(self) -> 'RelationalGraphNeuralNetwork':

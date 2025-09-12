@@ -12,7 +12,7 @@
 - **🧠 Relational Graph Neural Networks**: R-GNN implementation for structured reasoning
 - **📋 PDDL Integration**: Seamless integration with PDDL planning domains and problems via Mimir
 - **⚡ PyTorch Backend**: Built on PyTorch for GPU acceleration
-- **🔧 Flexible Configuration**: Declarative configuration system with both enum-based and class-based APIs
+- **🔧 Flexible Configuration**: Declarative configuration system with class-based encoder API
 - **🎯 Planning-Focused**: Designed specifically for AI planning and reinforcement learning applications
 - **📊 Multiple Aggregation Functions**: Support for various message aggregation strategies
 - **🏗️ Professional API**: Clean, type-safe interface with comprehensive documentation
@@ -34,8 +34,6 @@ pip install pymimir-rgnn
 
 ## Quick Start
 
-### Class-Based API (Recommended)
-
 ```python
 import pymimir as mm
 import pymimir_rgnn as rgnn
@@ -43,7 +41,7 @@ import pymimir_rgnn as rgnn
 # Load a PDDL domain
 domain = mm.Domain('path/to/domain.pddl')
 
-# Configure using the new class-based API
+# Configure using the class-based encoder API
 config = rgnn.RelationalGraphNeuralNetworkConfig(
     domain=domain,
     input_specification=(
@@ -74,29 +72,6 @@ q_values = output.readout('q_values')
 state_value = output.readout('state_value')
 ```
 
-### Legacy Enum-Based API (Still Supported)
-
-```python
-import pymimir as mm
-import pymimir_rgnn as rgnn
-
-# Load a PDDL domain
-domain = mm.Domain('path/to/domain.pddl')
-
-# Configure using the legacy enum-based API
-config = rgnn.RelationalGraphNeuralNetworkConfig(
-    domain=domain,
-    input_specification=(rgnn.InputType.State, rgnn.InputType.Goal),
-    output_specification=[('q_values', rgnn.OutputNodeType.Action, rgnn.OutputValueType.Scalar)],
-    embedding_size=64,
-    num_layers=5,
-    message_aggregation=rgnn.AggregationFunction.HardMaximum
-)
-
-# Create and initialize the model
-model = rgnn.RelationalGraphNeuralNetwork(config)
-```
-
 ## API Overview
 
 ### Core Components
@@ -104,8 +79,8 @@ model = rgnn.RelationalGraphNeuralNetwork(config)
 #### `RelationalGraphNeuralNetworkConfig`
 Central configuration class that defines:
 - **Domain**: The PDDL domain for the planning problem
-- **Input Specification**: Types of inputs using either encoder classes or enums
-- **Output Specification**: Named outputs with encoder classes or node/value type pairs
+- **Input Specification**: Types of inputs using encoder classes
+- **Output Specification**: Named outputs with encoder classes
 - **Model Parameters**: Embedding size, number of layers, aggregation functions
 
 #### `RelationalGraphNeuralNetwork`
@@ -115,7 +90,7 @@ The main R-GNN model class that:
 - Provides flexible output configurations for different applications
 - Handles batched inference efficiently
 
-### Input Encoders (Class-Based API)
+### Input Encoders
 
 - **`StateEncoder()`**: Current state of the planning problem
 - **`GoalEncoder()`**: Goal specification
@@ -123,31 +98,12 @@ The main R-GNN model class that:
 - **`TransitionEffectsEncoder()`**: Action effects and transitions
 - **`SuccessorsEncoder()`**: State successors
 
-### Output Encoders (Class-Based API)
+### Output Encoders
 
 - **`ActionScalarOutput()`**: Scalar values over actions
 - **`ActionEmbeddingOutput()`**: Embeddings over actions  
 - **`ObjectsScalarOutput()`**: Scalar values over objects
 - **`ObjectsEmbeddingOutput()`**: Embeddings over objects
-
-### Legacy Input Types (Enum-Based API)
-
-- **`InputType.State`**: Current state of the planning problem
-- **`InputType.Goal`**: Goal specification
-- **`InputType.GroundActions`**: Available ground actions
-- **`InputType.TransitionEffects`**: Action effects and transitions
-
-### Legacy Output Specifications (Enum-Based API)
-
-Configure outputs by node type and value type:
-
-```python
-output_specification = [
-    ('actor', rgnn.OutputNodeType.Action, rgnn.OutputValueType.Scalar),
-    ('critic', rgnn.OutputNodeType.Objects, rgnn.OutputValueType.Scalar),
-    ('embeddings', rgnn.OutputNodeType.All, rgnn.OutputValueType.Embeddings)
-]
-```
 
 ### Aggregation Functions
 
@@ -158,7 +114,7 @@ output_specification = [
 
 ## Extensibility
 
-The class-based API allows you to extend the library by inheriting from base encoder classes:
+The class-based encoder API allows you to extend the library by inheriting from base encoder classes:
 
 ### Custom Input Encoders
 
@@ -174,6 +130,15 @@ class CustomStateEncoder(rgnn.StateEncoder):
         relations.append(("custom_spatial_relation", 3))
         
         return relations
+    
+    def encode(self, input_value: Any, intermediate: rgnn.ListInput, state: mm.State) -> int:
+        # Get standard encoding
+        nodes_added = super().encode(input_value, intermediate, state)
+        
+        # Add custom encoding logic here
+        # ... custom processing ...
+        
+        return nodes_added
 
 # Use in configuration
 config = rgnn.RelationalGraphNeuralNetworkConfig(
@@ -190,11 +155,11 @@ config = rgnn.RelationalGraphNeuralNetworkConfig(
 class CustomActionOutput(rgnn.ActionScalarOutput):
     """Custom action output with specialized processing."""
     
-    def get_output_node_type(self) -> rgnn.OutputNodeType:
-        return rgnn.OutputNodeType.Action
+    def get_output_node_type(self) -> str:
+        return "action"
     
-    def get_output_value_type(self) -> rgnn.OutputValueType:
-        return rgnn.OutputValueType.Scalar
+    def get_output_value_type(self) -> str:
+        return "scalar"
 
 # Use in configuration  
 config = rgnn.RelationalGraphNeuralNetworkConfig(

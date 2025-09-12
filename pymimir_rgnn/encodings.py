@@ -271,13 +271,13 @@ class ListInput:
 
 class TensorInput:
     def __init__(self):
-        self.flattened_relations: dict[str, torch.LongTensor] = {}
+        self.flattened_relations: dict[str, torch.Tensor] = {}
         self.node_count: int = 0
-        self.node_sizes: torch.LongTensor = torch.LongTensor()
-        self.object_sizes: torch.LongTensor = torch.LongTensor()
-        self.object_indices: torch.LongTensor = torch.LongTensor()
-        self.action_sizes: torch.LongTensor = torch.LongTensor()
-        self.action_indices: torch.LongTensor = torch.LongTensor()
+        self.node_sizes: torch.Tensor = torch.LongTensor()
+        self.object_sizes: torch.Tensor = torch.LongTensor()
+        self.object_indices: torch.Tensor = torch.LongTensor()
+        self.action_sizes: torch.Tensor = torch.LongTensor()
+        self.action_indices: torch.Tensor = torch.LongTensor()
 
 
 def get_encoding_from_encoders(domain: mm.Domain, input_specification: tuple[InputEncoder, ...]) -> list[tuple[str, int]]:
