@@ -185,6 +185,7 @@ class RelationalMessagePassingModule(nn.Module):
     def __init__(self, config: RelationalGraphNeuralNetworkConfig):
         super().__init__()  # type: ignore
         self._config = config
+        self._relation_network: RelationMessagePassingBase
         if config.message_aggregation == AggregationFunction.Add:
             self._relation_network = SumRelationMessagePassing(config)
         elif config.message_aggregation == AggregationFunction.Mean:
@@ -287,7 +288,7 @@ class RelationalGraphNeuralNetwork(nn.Module):
             assert isinstance(output_name, str), 'The first part of the output specification must be a name.'
             assert isinstance(output_node_type, OutputNodeType), 'The third part of the output specification must be an output node type.'
             assert isinstance(output_value_type, OutputValueType), 'The second part of the output specification must be an output type.'
-            readout = None
+            readout: ObjectScalarReadout | ObjectEmbeddingReadout | ActionScalarReadout | ActionEmbeddingReadout | None = None
             if (output_node_type == OutputNodeType.Objects) and (output_value_type == OutputValueType.Scalar):
                 readout = ObjectScalarReadout(config)
             if (output_node_type == OutputNodeType.Objects) and (output_value_type == OutputValueType.Embeddings):

@@ -34,7 +34,8 @@ Homepage = "https://github.com/simon-stahlberg/mimir-rgnn"
 dev = [
   "pytest>=6.0",
   "build",
-  "twine"
+  "twine",
+  "mypy>=1.0"
 ]
 
 [tool.pytest.ini_options]
@@ -45,3 +46,12 @@ filterwarnings = [
     "ignore::UserWarning"
 ]
 testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = false
+warn_unused_configs = true
+disallow_untyped_defs = false
+check_untyped_defs = true
+ignore_missing_imports = true
+show_error_codes = true
