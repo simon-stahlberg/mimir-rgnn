@@ -7,7 +7,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Union
 
-from .encodings import InputType, OutputValueType, OutputNodeType, TensorInput, encode_input, get_encoding, InputEncoder, OutputEncoder, encode_input_from_encoders, get_encoding_from_encoders  # type: ignore
+from .encodings import TensorInput, InputEncoder, OutputEncoder, encode_input_from_encoders, get_encoding_from_encoders  # type: ignore
 from .modules import MLP, SumReadout
 from .utils import gumbel_sigmoid
 
@@ -33,12 +33,12 @@ class RelationalGraphNeuralNetworkConfig:
         metadata={'doc': 'The domain of the planning problem.'}
     )
 
-    input_specification: Union[tuple[InputType, ...], tuple[InputEncoder, ...]] = field(
-        metadata={'doc': 'The typed shape of the input. Can be either enum-based (InputType.State, InputType.Goal) or encoder-based (StateEncoder(), GoalEncoder()). For example, (InputType.State, InputType.Goal) or (StateEncoder(), GoalEncoder()) indicates that each instance must be a tuple containing a state followed by a goal.'}
+    input_specification: tuple[InputEncoder, ...] = field(
+        metadata={'doc': 'The input encoders that define how to transform PDDL structures into graph neural network inputs. For example, (StateEncoder(), GoalEncoder(), GroundActionsEncoder()) indicates that each instance must be a tuple containing a state, followed by a goal, followed by actions.'}
     )
 
-    output_specification: Union[list[tuple[str, OutputNodeType, OutputValueType]], list[tuple[str, OutputEncoder]]] = field(
-        metadata={'doc': 'The named outputs of the forward pass. Can be either enum-based tuples like [("actor", OutputNodeType.Action, OutputValueType.Scalar)] or encoder-based tuples like [("actor", ActionScalarOutput())]. Both formats define outputs with different readout functions.'}
+    output_specification: list[tuple[str, OutputEncoder]] = field(
+        metadata={'doc': 'The named outputs of the forward pass using encoder objects. For example, [("q_values", ActionScalarOutput()), ("state_value", ObjectsScalarOutput())] defines two outputs with different readout functions.'}
     )
 
     embedding_size: int = field(
@@ -103,12 +103,8 @@ class RelationMessagePassingBase(nn.Module):
         super().__init__()  # type: ignore
         self._embedding_size = config.embedding_size
         self._relation_mlps = nn.ModuleDict()
-        # Handle both enum-based and encoder-based input specifications
-        encoding_relations = []
-        if len(config.input_specification) > 0 and isinstance(config.input_specification[0], InputEncoder):
-            encoding_relations = get_encoding_from_encoders(config.domain, config.input_specification)  # type: ignore
-        else:
-            encoding_relations = get_encoding(config.domain, config.input_specification)  # type: ignore
+        # Get encoding relations from encoders
+        encoding_relations = get_encoding_from_encoders(config.domain, config.input_specification)
             
         for relation_name, relation_arity in encoding_relations:
             input_size = relation_arity * config.embedding_size
@@ -291,34 +287,24 @@ class RelationalGraphNeuralNetwork(nn.Module):
         self._mpnn_module = RelationalMessagePassingModule(config)
         self._readouts = nn.ModuleDict()
         
-        # Handle both enum-based and encoder-based output specifications
+        # Handle encoder-based output specifications
         for output_spec in config.output_specification:
-            if len(output_spec) == 2:
-                # New encoder-based format: (name, OutputEncoder)
-                output_name, output_encoder = output_spec
-                assert isinstance(output_name, str), 'The first part of the output specification must be a name.'
-                assert isinstance(output_encoder, OutputEncoder), 'The second part of the output specification must be an OutputEncoder.'
-                
-                output_node_type = output_encoder.get_output_node_type()
-                output_value_type = output_encoder.get_output_value_type()
-                
-            elif len(output_spec) == 3:
-                # Legacy enum-based format: (name, OutputNodeType, OutputValueType)
-                output_name, output_node_type, output_value_type = output_spec
-                assert isinstance(output_name, str), 'The first part of the output specification must be a name.'
-                assert isinstance(output_node_type, OutputNodeType), 'The second part of the output specification must be an output node type.'
-                assert isinstance(output_value_type, OutputValueType), 'The third part of the output specification must be an output type.'
-            else:
-                raise ValueError(f'Output specification must be either (name, OutputEncoder) or (name, OutputNodeType, OutputValueType), got {output_spec}')
+            # Encoder-based format: (name, OutputEncoder)
+            output_name, output_encoder = output_spec
+            assert isinstance(output_name, str), 'The first part of the output specification must be a name.'
+            assert isinstance(output_encoder, OutputEncoder), 'The second part of the output specification must be an OutputEncoder.'
+            
+            output_node_type = output_encoder.get_output_node_type()
+            output_value_type = output_encoder.get_output_value_type()
             
             readout: ObjectScalarReadout | ObjectEmbeddingReadout | ActionScalarReadout | ActionEmbeddingReadout | None = None
-            if (output_node_type == OutputNodeType.Objects) and (output_value_type == OutputValueType.Scalar):
+            if (output_node_type == 'objects') and (output_value_type == 'scalar'):
                 readout = ObjectScalarReadout(config)
-            if (output_node_type == OutputNodeType.Objects) and (output_value_type == OutputValueType.Embeddings):
+            if (output_node_type == 'objects') and (output_value_type == 'embeddings'):
                 readout = ObjectEmbeddingReadout()
-            if (output_node_type == OutputNodeType.Action) and (output_value_type == OutputValueType.Scalar):
+            if (output_node_type == 'action') and (output_value_type == 'scalar'):
                 readout = ActionScalarReadout(config)
-            if (output_node_type == OutputNodeType.Action) and (output_value_type == OutputValueType.Embeddings):
+            if (output_node_type == 'action') and (output_value_type == 'embeddings'):
                 readout = ActionEmbeddingReadout()
             if readout is None:
                 raise NotImplementedError(f'Output "{output_value_type}" over "{output_node_type}" is not implemented yet.')
@@ -349,12 +335,9 @@ class RelationalGraphNeuralNetwork(nn.Module):
         return self._dummy.device
 
     def forward(self, x: list[tuple]) -> ForwardState:  # type: ignore
-        # Create input - handle both enum-based and encoder-based specifications
+        # Create input using encoder-based specification
         assert isinstance(x, list), 'Expected input to be a list.'
-        if len(self._config.input_specification) > 0 and isinstance(self._config.input_specification[0], InputEncoder):
-            input = encode_input_from_encoders(x, self._config.input_specification, self.get_device())  # type: ignore
-        else:
-            input = encode_input(x, self._config.input_specification, self.get_device())  # type: ignore
+        input = encode_input_from_encoders(x, self._config.input_specification, self.get_device())
         # Pass the input through the MPNN module
         if len(self._hooks) > 0:
             def hook_function(layer_index: 'int', node_embeddings: 'torch.Tensor') -> 'None':
