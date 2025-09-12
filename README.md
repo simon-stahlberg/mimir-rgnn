@@ -9,9 +9,9 @@
 
 ## Key Features
 
-- **🧠 Relational Graph Neural Networks**: State-of-the-art R-GNN implementation for structured reasoning
+- **🧠 Relational Graph Neural Networks**: R-GNN implementation for structured reasoning
 - **📋 PDDL Integration**: Seamless integration with PDDL planning domains and problems via Mimir
-- **⚡ PyTorch Backend**: Built on PyTorch for efficient computation and GPU acceleration
+- **⚡ PyTorch Backend**: Built on PyTorch for GPU acceleration
 - **🔧 Flexible Configuration**: Declarative configuration system for input/output specifications
 - **🎯 Planning-Focused**: Designed specifically for AI planning and reinforcement learning applications
 - **📊 Multiple Aggregation Functions**: Support for various message aggregation strategies
@@ -104,23 +104,13 @@ output_specification = [
 - **`AggregationFunction.Add`**: Sum aggregation
 - **`AggregationFunction.Mean`**: Mean aggregation  
 - **`AggregationFunction.HardMaximum`**: Hard maximum
-- **`AggregationFunction.SmoothMaximum`**: Smooth maximum (Gumbel)
-
-## Applications
-
-Mimir-RGNN is particularly well-suited for:
-
-- **Reinforcement Learning**: Value function approximation and policy learning
-- **Planning**: Heuristic learning and action selection
-- **Graph Neural Networks**: Learning on structured relational data
-- **AI Research**: Experiments with neural-symbolic integration
+- **`AggregationFunction.SmoothMaximum`**: Smooth maximum (LogSumExp)
 
 ## Examples and Tutorials
 
-For comprehensive examples and tutorials, visit:
+For an comprehensive example, visit:
 
 - [Example Project Repository](https://github.com/simon-stahlberg/relational-neural-network-python/)
-- [Documentation](#) _(coming soon)_
 
 ## Contributing
 
@@ -140,16 +130,15 @@ If you use Mimir-RGNN in your research, please cite:
 
 ```bibtex
 @software{stahlberg2024mimir_rgnn,
-  author = {Simon Stahlberg},
+  author = {Simon St\r{a}hlberg},
   title = {Mimir-RGNN: Relational Graph Neural Networks for AI Planning},
   url = {https://github.com/simon-stahlberg/mimir-rgnn},
-  version = {0.1.3},
-  year = {2024}
+  version = {<package version>},
+  year = {<year package version was released>}
 }
 ```
 
 ## Support
 
 - 🐛 **Bug Reports**: [GitHub Issues](https://github.com/simon-stahlberg/mimir-rgnn/issues)
-- 💬 **Questions**: [GitHub Discussions](https://github.com/simon-stahlberg/mimir-rgnn/discussions)
 - 📧 **Contact**: simon.stahlberg@gmail.com
