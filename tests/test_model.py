@@ -25,7 +25,7 @@ def test_create_model(dom: str, agg: str, layers: int, size: int, gro: bool, nor
     config = RelationalGraphNeuralNetworkConfig(
         domain=domain,
         input_specification=(StateEncoder(), GroundActionsEncoder(), GoalEncoder()),
-        output_specification=[('q_values', ActionScalarOutput())],
+        output_specification=[('q_values', ActionScalarDecoder(size))],
         message_aggregation=agg,
         num_layers=layers,
         embedding_size=size,
@@ -54,7 +54,7 @@ def test_forward_model(dom: str, agg: str, layers: int, size: int, gro: bool, no
     config = RelationalGraphNeuralNetworkConfig(
         domain=domain,
         input_specification=(StateEncoder(), GroundActionsEncoder(), GoalEncoder()),
-        output_specification=[('q_values', ActionScalarOutput())],
+        output_specification=[('q_values', ActionScalarDecoder(size))],
         message_aggregation=agg,
         num_layers=layers,
         embedding_size=size,
@@ -81,7 +81,7 @@ def test_forward_hook(domain_name: str):
     config = RelationalGraphNeuralNetworkConfig(
         domain=domain,
         input_specification=(StateEncoder(), GoalEncoder()),
-        output_specification=[('value', ObjectsScalarOutput())],
+        output_specification=[('value', ObjectsScalarDecoder(8))],
         num_layers=4,
         embedding_size=8
     )
@@ -113,7 +113,7 @@ def test_forward_identical_batch(domain_name: str):
     config = RelationalGraphNeuralNetworkConfig(
         domain=domain,
         input_specification=(StateEncoder(), GoalEncoder()),
-        output_specification=[('value', ObjectsScalarOutput())],
+        output_specification=[('value', ObjectsScalarDecoder(8))],
         num_layers=4,
         embedding_size=8
     )
@@ -137,7 +137,7 @@ def test_forward_different_batch(domain_name: str):
     config = RelationalGraphNeuralNetworkConfig(
         domain=domain,
         input_specification=(StateEncoder(), GoalEncoder()),
-        output_specification=[('value', ObjectsScalarOutput())],
+        output_specification=[('value', ObjectsScalarDecoder(8))],
         num_layers=4,
         embedding_size=8
     )
@@ -159,7 +159,7 @@ def test_save_and_load():
     config_1 = RelationalGraphNeuralNetworkConfig(
         domain=domain,
         input_specification=(StateEncoder(), GroundActionsEncoder(), GoalEncoder()),
-        output_specification=[('q_values', ActionScalarOutput())],
+        output_specification=[('q_values', ActionScalarDecoder(4))],
         message_aggregation=AggregationFunction.Mean,
         num_layers=2,
         embedding_size=4,

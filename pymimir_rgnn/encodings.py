@@ -1,5 +1,6 @@
 import pymimir as mm
 import torch
+import torch.nn as nn
 
 from abc import ABC, abstractmethod
 from typing import Any, Optional
@@ -7,8 +8,8 @@ from typing import Any, Optional
 from .utils import get_action_name, get_atom_name, get_effect_name, get_effect_relation_name, get_predicate_name, relations_to_tensors
 
 
-class InputEncoder(ABC):
-    """Base class for input encoders that transform PDDL structures into graph neural network inputs."""
+class Encoder(ABC):
+    """Base class for encoders that transform PDDL structures into graph neural network inputs."""
     
     @abstractmethod
     def get_relations(self, domain: mm.Domain) -> list[tuple[str, int]]:
@@ -31,21 +32,28 @@ class InputEncoder(ABC):
         pass
 
 
-class OutputEncoder(ABC):
-    """Base class for output encoders that define how to read out values from node embeddings."""
+class Decoder(ABC, torch.nn.Module):
+    """Base class for decoders that implement readout logic from node embeddings."""
+    
+    def __init__(self):
+        super().__init__()
     
     @abstractmethod
-    def get_output_node_type(self) -> str:
-        """Return the output node type this encoder targets ('objects', 'action', 'all')."""
-        pass
-    
-    @abstractmethod
-    def get_output_value_type(self) -> str:
-        """Return the output value type this encoder produces ('scalar', 'embeddings')."""
+    def forward(self, node_embeddings: torch.Tensor, input: 'EncodedInput') -> Any:
+        """
+        Perform readout from node embeddings to produce output values.
+        
+        Args:
+            node_embeddings: The node embeddings from the graph neural network
+            input: The encoded input containing graph structure information
+            
+        Returns:
+            The decoded output (tensors, lists of tensors, etc.)
+        """
         pass
 
 
-class StateEncoder(InputEncoder):
+class StateEncoder(Encoder):
     """Encoder for planning states."""
     
     def get_relations(self, domain: mm.Domain) -> list[tuple[str, int]]:
@@ -81,7 +89,7 @@ class StateEncoder(InputEncoder):
             intermediate.flattened_relations[relation_name].extend(object_indices)
 
 
-class GoalEncoder(InputEncoder):
+class GoalEncoder(Encoder):
     """Encoder for goal conditions."""
     
     def get_relations(self, domain: mm.Domain) -> list[tuple[str, int]]:
@@ -113,7 +121,7 @@ class GoalEncoder(InputEncoder):
             intermediate.flattened_relations[relation_name].extend(object_indices)
 
 
-class GroundActionsEncoder(InputEncoder):
+class GroundActionsEncoder(Encoder):
     """Encoder for ground actions."""
     
     def get_relations(self, domain: mm.Domain) -> list[tuple[str, int]]:
@@ -149,7 +157,7 @@ class GroundActionsEncoder(InputEncoder):
         return num_actions
 
 
-class TransitionEffectsEncoder(InputEncoder):
+class TransitionEffectsEncoder(Encoder):
     """Encoder for transition effects."""
     
     def get_relations(self, domain: mm.Domain) -> list[tuple[str, int]]:
@@ -205,7 +213,7 @@ class TransitionEffectsEncoder(InputEncoder):
         return num_transitions
 
 
-class SuccessorsEncoder(InputEncoder):
+class SuccessorsEncoder(Encoder):
     """Encoder for state successors."""
     
     def get_relations(self, domain: mm.Domain) -> list[tuple[str, int]]:
@@ -217,45 +225,52 @@ class SuccessorsEncoder(InputEncoder):
         raise NotImplementedError('State successors are not supported yet.')
 
 
-# Output encoder implementations
-class ActionScalarOutput(OutputEncoder):
-    """Output encoder for scalar values over actions."""
+# Decoder implementations
+class ActionScalarDecoder(Decoder):
+    """Decoder for scalar values over actions."""
     
-    def get_output_node_type(self) -> str:
-        return 'action'
-    
-    def get_output_value_type(self) -> str:
-        return 'scalar'
+    def __init__(self, embedding_size: int):
+        super().__init__()
+        # Import modules here to avoid circular imports
+        from .modules import SumReadout, MLP
+        self._object_readout = SumReadout(embedding_size, embedding_size)
+        self._action_value = MLP(2 * embedding_size, 1)
+
+    def forward(self, node_embeddings: torch.Tensor, input: 'EncodedInput') -> list[torch.Tensor]:
+        action_embeddings = node_embeddings.index_select(0, input.action_indices)
+        object_embeddings = node_embeddings.index_select(0, input.object_indices)
+        object_aggregation: torch.Tensor = self._object_readout(object_embeddings, input.object_sizes)
+        object_aggregation = object_aggregation.repeat_interleave(input.action_sizes, dim=0)
+        values: torch.Tensor = self._action_value(torch.cat((action_embeddings, object_aggregation), dim=1))
+        return [action_values.view(-1) for action_values in values.split(input.action_sizes.tolist())]  # type: ignore
 
 
-class ActionEmbeddingOutput(OutputEncoder):
-    """Output encoder for embeddings over actions."""
+class ActionEmbeddingDecoder(Decoder):
+    """Decoder for embeddings over actions."""
     
-    def get_output_node_type(self) -> str:
-        return 'action'
-    
-    def get_output_value_type(self) -> str:
-        return 'embeddings'
+    def forward(self, node_embeddings: torch.Tensor, input: 'EncodedInput') -> torch.Tensor:
+        return node_embeddings.index_select(0, input.action_indices)
 
 
-class ObjectsScalarOutput(OutputEncoder):
-    """Output encoder for scalar values over objects."""
+class ObjectsScalarDecoder(Decoder):
+    """Decoder for scalar values over objects."""
     
-    def get_output_node_type(self) -> str:
-        return 'objects'
-    
-    def get_output_value_type(self) -> str:
-        return 'scalar'
+    def __init__(self, embedding_size: int):
+        super().__init__()
+        # Import modules here to avoid circular imports
+        from .modules import SumReadout
+        self._object_readout = SumReadout(embedding_size, 1)
+
+    def forward(self, node_embeddings: torch.Tensor, input: 'EncodedInput') -> torch.Tensor:
+        object_embeddings = node_embeddings.index_select(0, input.object_indices)
+        return self._object_readout(object_embeddings, input.object_sizes).view(-1)
 
 
-class ObjectsEmbeddingOutput(OutputEncoder):
-    """Output encoder for embeddings over objects."""
+class ObjectsEmbeddingDecoder(Decoder):
+    """Decoder for embeddings over objects."""
     
-    def get_output_node_type(self) -> str:
-        return 'objects'
-    
-    def get_output_value_type(self) -> str:
-        return 'embeddings'
+    def forward(self, node_embeddings: torch.Tensor, input: 'EncodedInput') -> torch.Tensor:
+        return node_embeddings.index_select(0, input.object_indices)
 
 
 class ListInput:
@@ -269,7 +284,7 @@ class ListInput:
         self.action_indices: list[int] = []
 
 
-class TensorInput:
+class EncodedInput:
     def __init__(self):
         self.flattened_relations: dict[str, torch.Tensor] = {}
         self.node_count: int = 0
@@ -280,7 +295,7 @@ class TensorInput:
         self.action_indices: torch.Tensor = torch.LongTensor()
 
 
-def get_encoding_from_encoders(domain: mm.Domain, input_specification: tuple[InputEncoder, ...]) -> list[tuple[str, int]]:
+def get_encoding_from_encoders(domain: mm.Domain, input_specification: tuple[Encoder, ...]) -> list[tuple[str, int]]:
     """Get relations from encoder-based input specifications."""
     relations: list[tuple[str, int]] = []
     for encoder in input_specification:
@@ -289,7 +304,7 @@ def get_encoding_from_encoders(domain: mm.Domain, input_specification: tuple[Inp
     return relations
 
 
-def encode_input_from_encoders(input: list[tuple], input_specification: tuple[InputEncoder, ...], device: torch.device) -> TensorInput:
+def encode_input_from_encoders(input: list[tuple], input_specification: tuple[Encoder, ...], device: torch.device) -> EncodedInput:
     """Encode input using encoder-based specifications."""
     intermediate = ListInput()
     
@@ -321,7 +336,7 @@ def encode_input_from_encoders(input: list[tuple], input_specification: tuple[In
         intermediate.node_count += added_nodes
 
     # Convert the lists to tensors on the correct device
-    result = TensorInput()
+    result = EncodedInput()
     result.flattened_relations = relations_to_tensors(intermediate.flattened_relations, device)
     result.node_count = intermediate.node_count
     result.node_sizes = torch.tensor(intermediate.node_sizes, dtype=torch.int, device=device, requires_grad=False)

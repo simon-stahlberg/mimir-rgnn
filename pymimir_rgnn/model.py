@@ -7,7 +7,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Union
 
-from .encodings import TensorInput, InputEncoder, OutputEncoder, encode_input_from_encoders, get_encoding_from_encoders  # type: ignore
+from .encodings import EncodedInput, Encoder, Decoder, encode_input_from_encoders, get_encoding_from_encoders  # type: ignore
 from .modules import MLP, SumReadout
 from .utils import gumbel_sigmoid
 
@@ -33,12 +33,12 @@ class RelationalGraphNeuralNetworkConfig:
         metadata={'doc': 'The domain of the planning problem.'}
     )
 
-    input_specification: tuple[InputEncoder, ...] = field(
-        metadata={'doc': 'The input encoders that define how to transform PDDL structures into graph neural network inputs. For example, (StateEncoder(), GoalEncoder(), GroundActionsEncoder()) indicates that each instance must be a tuple containing a state, followed by a goal, followed by actions.'}
+    input_specification: tuple[Encoder, ...] = field(
+        metadata={'doc': 'The encoders that define how to transform PDDL structures into graph neural network inputs. For example, (StateEncoder(), GoalEncoder(), GroundActionsEncoder()) indicates that each instance must be a tuple containing a state, followed by a goal, followed by actions.'}
     )
 
-    output_specification: list[tuple[str, OutputEncoder]] = field(
-        metadata={'doc': 'The named outputs of the forward pass using encoder objects. For example, [("q_values", ActionScalarOutput()), ("state_value", ObjectsScalarOutput())] defines two outputs with different readout functions.'}
+    output_specification: list[tuple[str, Decoder]] = field(
+        metadata={'doc': 'The named outputs of the forward pass using decoder objects. For example, [("q_values", ActionScalarDecoder(config)), ("state_value", ObjectsScalarDecoder(config))] defines two outputs with different readout functions.'}
     )
 
     embedding_size: int = field(
@@ -217,7 +217,7 @@ class RelationalMessagePassingModule(nn.Module):
     def clear_hooks(self) -> None:
         self._hooks.clear()
 
-    def forward(self, input: TensorInput) -> torch.Tensor:
+    def forward(self, input: EncodedInput) -> torch.Tensor:
         device = input.node_sizes.device
         node_embeddings: torch.Tensor = torch.zeros([int(input.node_sizes.sum()), self._config.embedding_size], dtype=torch.float, requires_grad=True, device=device)
         for iteration in range(self._config.num_layers):
@@ -244,13 +244,13 @@ class ObjectScalarReadout(nn.Module):
         super().__init__()  # type: ignore
         self._object_readout = SumReadout(config.embedding_size, 1)
 
-    def forward(self, node_embeddings: torch.Tensor, input: TensorInput):
+    def forward(self, node_embeddings: torch.Tensor, input: EncodedInput):
         object_embeddings = node_embeddings.index_select(0, input.object_indices)
         return self._object_readout(object_embeddings, input.object_sizes).view(-1)
 
 
 class ObjectEmbeddingReadout(nn.Module):
-    def forward(self, node_embeddings: torch.Tensor, input: TensorInput):
+    def forward(self, node_embeddings: torch.Tensor, input: EncodedInput):
         return node_embeddings.index_select(0, input.object_indices)
 
 
@@ -260,7 +260,7 @@ class ActionScalarReadout(nn.Module):
         self._object_readout = SumReadout(config.embedding_size, config.embedding_size)
         self._action_value = MLP(2 * config.embedding_size, 1)
 
-    def forward(self, node_embeddings: torch.Tensor, input: TensorInput) -> list[torch.Tensor]:
+    def forward(self, node_embeddings: torch.Tensor, input: EncodedInput) -> list[torch.Tensor]:
         action_embeddings = node_embeddings.index_select(0, input.action_indices)
         object_embeddings = node_embeddings.index_select(0, input.object_indices)
         object_aggregation: torch.Tensor = self._object_readout(object_embeddings, input.object_sizes)
@@ -270,7 +270,7 @@ class ActionScalarReadout(nn.Module):
 
 
 class ActionEmbeddingReadout(nn.Module):
-    def forward(self, node_embeddings: torch.Tensor, input: TensorInput):
+    def forward(self, node_embeddings: torch.Tensor, input: EncodedInput):
         return node_embeddings.index_select(0, input.action_indices)
 
 
@@ -287,28 +287,15 @@ class RelationalGraphNeuralNetwork(nn.Module):
         self._mpnn_module = RelationalMessagePassingModule(config)
         self._readouts = nn.ModuleDict()
         
-        # Handle encoder-based output specifications
+        # Handle decoder-based output specifications
         for output_spec in config.output_specification:
-            # Encoder-based format: (name, OutputEncoder)
-            output_name, output_encoder = output_spec
+            # Decoder-based format: (name, Decoder)
+            output_name, decoder = output_spec
             assert isinstance(output_name, str), 'The first part of the output specification must be a name.'
-            assert isinstance(output_encoder, OutputEncoder), 'The second part of the output specification must be an OutputEncoder.'
+            assert isinstance(decoder, Decoder), 'The second part of the output specification must be a Decoder.'
             
-            output_node_type = output_encoder.get_output_node_type()
-            output_value_type = output_encoder.get_output_value_type()
-            
-            readout: ObjectScalarReadout | ObjectEmbeddingReadout | ActionScalarReadout | ActionEmbeddingReadout | None = None
-            if (output_node_type == 'objects') and (output_value_type == 'scalar'):
-                readout = ObjectScalarReadout(config)
-            if (output_node_type == 'objects') and (output_value_type == 'embeddings'):
-                readout = ObjectEmbeddingReadout()
-            if (output_node_type == 'action') and (output_value_type == 'scalar'):
-                readout = ActionScalarReadout(config)
-            if (output_node_type == 'action') and (output_value_type == 'embeddings'):
-                readout = ActionEmbeddingReadout()
-            if readout is None:
-                raise NotImplementedError(f'Output "{output_value_type}" over "{output_node_type}" is not implemented yet.')
-            self._readouts.add_module(output_name, readout)
+            # Directly use the provided decoder
+            self._readouts.add_module(output_name, decoder)
         self._dummy = nn.Parameter(torch.empty(0))
         self._hooks: list[Callable[[ForwardState], None]] = []
 

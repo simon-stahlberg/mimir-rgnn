@@ -1,5 +1,5 @@
 from .model import AggregationFunction, UpdateFunction, MessageFunction, ForwardState, RelationalGraphNeuralNetworkConfig, RelationalGraphNeuralNetwork
-from .encodings import InputEncoder, OutputEncoder, StateEncoder, GoalEncoder, GroundActionsEncoder, TransitionEffectsEncoder, SuccessorsEncoder, ActionScalarOutput, ActionEmbeddingOutput, ObjectsScalarOutput, ObjectsEmbeddingOutput
+from .encodings import Encoder, Decoder, StateEncoder, GoalEncoder, GroundActionsEncoder, TransitionEffectsEncoder, SuccessorsEncoder, ActionScalarDecoder, ActionEmbeddingDecoder, ObjectsScalarDecoder, ObjectsEmbeddingDecoder
 
 __all__ = [
     # Model
@@ -10,15 +10,15 @@ __all__ = [
     "RelationalGraphNeuralNetworkConfig",
     "RelationalGraphNeuralNetwork",
     # Encoder Classes
-    "InputEncoder",
-    "OutputEncoder",
+    "Encoder",
+    "Decoder",
     "StateEncoder",
     "GoalEncoder", 
     "GroundActionsEncoder",
     "TransitionEffectsEncoder",
     "SuccessorsEncoder",
-    "ActionScalarOutput",
-    "ActionEmbeddingOutput",
-    "ObjectsScalarOutput",
-    "ObjectsEmbeddingOutput"
+    "ActionScalarDecoder",
+    "ActionEmbeddingDecoder",
+    "ObjectsScalarDecoder",
+    "ObjectsEmbeddingDecoder"
 ]
