@@ -1,16 +1,28 @@
 from .model import AggregationFunction, UpdateFunction, MessageFunction, ForwardState, RelationalGraphNeuralNetworkConfig, RelationalGraphNeuralNetwork
-from .encodings import InputType, OutputValueType, OutputNodeType
+from .encodings import InputType, OutputValueType, OutputNodeType, InputEncoder, OutputEncoder, StateEncoder, GoalEncoder, GroundActionsEncoder, TransitionEffectsEncoder, SuccessorsEncoder, ActionScalarOutput, ActionEmbeddingOutput, ObjectsScalarOutput, ObjectsEmbeddingOutput
 
 __all__ = [
     # Model
     "AggregationFunction",
-    "UpdateFunction",
+    "UpdateFunction", 
     "MessageFunction",
     "ForwardState",
     "RelationalGraphNeuralNetworkConfig",
     "RelationalGraphNeuralNetwork",
-    # Encodings
+    # Legacy Encodings
     "InputType",
     "OutputValueType",
-    "OutputNodeType"
+    "OutputNodeType",
+    # New Encoder Classes
+    "InputEncoder",
+    "OutputEncoder",
+    "StateEncoder",
+    "GoalEncoder", 
+    "GroundActionsEncoder",
+    "TransitionEffectsEncoder",
+    "SuccessorsEncoder",
+    "ActionScalarOutput",
+    "ActionEmbeddingOutput",
+    "ObjectsScalarOutput",
+    "ObjectsEmbeddingOutput"
 ]
