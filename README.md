@@ -40,62 +40,72 @@ import pymimir_rgnn as rgnn
 # Load a PDDL domain
 domain = mm.Domain('path/to/domain.pddl')
 
-# Configure the R-GNN model
-config = rgnn.RelationalGraphNeuralNetworkConfig(
+# Configure the R-GNN hyperparameters
+config = rgnn.HyperparameterConfig(
     domain=domain,
-    input_specification=(rgnn.InputType.State, rgnn.InputType.Goal),
-    output_specification=[('q_values', rgnn.OutputNodeType.Action, rgnn.OutputValueType.Scalar)],
     embedding_size=64,
     num_layers=30,
     message_aggregation=rgnn.AggregationFunction.HardMaximum
 )
 
+# Define input and output specifications using encoder/decoder classes
+input_spec = (rgnn.StateEncoder(), rgnn.GoalEncoder())
+output_spec = [('q_values', rgnn.ActionScalarDecoder(config))]
+
 # Create and initialize the model
-model = rgnn.RelationalGraphNeuralNetwork(config)
+model = rgnn.RelationalGraphNeuralNetwork(config, input_spec, output_spec)
 
 # Use the model for inference
-# states = [...]  # List of Mimir State objects
-# goals = [...]   # List of Mimir GroundConjunctiveCondition objects
-# actions = [...]  # List of lists of Mimir GroundAction objects
+# problem = mm.Problem(domain, 'path/to/problem.pddl')
+# state = problem.get_initial_state()
+# goal = problem.get_goal_condition()
 #
-# inputs = list(zip(states, actions, goals))
+# inputs = [(state, goal)]  # Input tuple matching input_spec order
 # outputs = model(inputs)
+# q_values = outputs.readout('q_values')
 ```
 
 ## API Overview
 
 ### Core Components
 
-#### `RelationalGraphNeuralNetworkConfig`
-Central configuration class that defines:
+#### `HyperparameterConfig`
+Central configuration class that defines model hyperparameters:
 - **Domain**: The PDDL domain for the planning problem
-- **Input Specification**: Types of inputs (State, Goal, GroundActions, etc.)
-- **Output Specification**: Named outputs with node types and value types
 - **Model Parameters**: Embedding size, number of layers, aggregation functions
+- **Training Settings**: Normalization, global readout options
+
+#### Encoder/Decoder Classes
+Extensible class-based system for defining inputs and outputs:
+- **Input Specification**: Tuple of encoder instances (StateEncoder, GoalEncoder, etc.)
+- **Output Specification**: List of named decoder instances with custom readout logic
 
 #### `RelationalGraphNeuralNetwork`
 The main R-GNN model class that:
+- Takes hyperparameter config, input specification, and output specification
 - Processes relational graph structures from PDDL problems
-- Supports various input types (states, goals, actions, effects)
-- Provides flexible output configurations for different applications
+- Supports extensible encoder/decoder system for custom input/output handling
 - Handles batched inference efficiently
 
-### Input Types
+### Encoder Classes
 
-- **`InputType.State`**: Current state of the planning problem
-- **`InputType.Goal`**: Goal specification
-- **`InputType.GroundActions`**: Available ground actions
-- **`InputType.TransitionEffects`**: Action effects and transitions
+Inherit from `Encoder` base class to define custom input processing:
 
-### Output Specifications
+- **`StateEncoder`**: Current state of the planning problem
+- **`GoalEncoder`**: Goal specification  
+- **`GroundActionsEncoder`**: Available ground actions
+- **`TransitionEffectsEncoder`**: Action effects and transitions
 
-Configure outputs by node type and value type:
+### Decoder Classes
+
+Inherit from `Decoder` base class to define custom output readout:
 
 ```python
-output_specification = [
-    ('actor', rgnn.OutputNodeType.Action, rgnn.OutputValueType.Scalar),
-    ('critic', rgnn.OutputNodeType.Objects, rgnn.OutputValueType.Scalar),
-    ('embeddings', rgnn.OutputNodeType.All, rgnn.OutputValueType.Embeddings)
+input_spec = (StateEncoder(), GoalEncoder(), GroundActionsEncoder())
+output_spec = [
+    ('actor', ActionScalarDecoder(config)),
+    ('critic', ObjectsScalarDecoder(config)), 
+    ('embeddings', ActionEmbeddingDecoder())
 ]
 ```
 

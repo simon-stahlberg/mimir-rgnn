@@ -2,89 +2,17 @@ import pymimir as mm
 import torch
 import torch.nn as nn
 
-from dataclasses import dataclass, field, fields
-from enum import Enum
+from dataclasses import fields
 from pathlib import Path
 from typing import Any, Callable, Union
 
-from .encodings import InputType, OutputValueType, OutputNodeType, TensorInput, encode_input, get_encoding  # type: ignore
+from pymimir_rgnn.bases import Encoder
+
+from .decoders import Decoder
+from .encoders import EncodedTensors, encode_input_from_encoders, get_encoding_from_encoders
 from .modules import MLP, SumReadout
 from .utils import gumbel_sigmoid
-
-
-class AggregationFunction(Enum):
-    Add = 'add'
-    Mean = 'mean'
-    HardMaximum = 'hmax'
-    SmoothMaximum = 'smax'
-
-
-class UpdateFunction(Enum):
-    MLP = 'mlp'
-
-
-class MessageFunction(Enum):
-    PredicateMLP = 'predicate_mlp'
-
-
-@dataclass
-class RelationalGraphNeuralNetworkConfig:
-    domain: mm.Domain = field(
-        metadata={'doc': 'The domain of the planning problem.'}
-    )
-
-    input_specification: tuple[InputType, ...] = field(
-        metadata={'doc': 'The typed shape of the input. For example, (State, Goal) indicates that each instance must be a tuple containing a state followed by a goal.'}
-    )
-
-    output_specification: list[tuple[str, OutputNodeType, OutputValueType]] = field(
-        metadata={'doc': 'The named outputs of the forward pass. For example, [("actor", OutputNodeType.Action, OutputValueType.Scalar), ("critic", OutputNodeType.Action, OutputValueType.Scalar)] defines two outputs with different readout functions: one for the actor and one for the critic in RL; however, they share weights to compute the embeddings.'}
-    )
-
-    embedding_size: int = field(
-        default=32,
-        metadata={'doc': 'The size of the node embeddings.'}
-    )
-
-    num_layers: int = field(
-        default=30,
-        metadata={'doc': 'The number of message passing layers.'}
-    )
-
-    message_aggregation: AggregationFunction = field(
-        default=AggregationFunction.HardMaximum,
-        metadata={'doc': 'The aggregation method for message passing.'},
-    )
-
-    message_function: MessageFunction = field(
-        default=MessageFunction.PredicateMLP,
-        metadata={'doc': 'The type of the message function.'}
-    )
-
-    update_function: UpdateFunction = field(
-        default=UpdateFunction.MLP,
-        metadata={'doc': 'The type of the update function.'}
-    )
-
-    normalize_updates: bool = field(
-        default=True,
-        metadata={'doc': 'Whether to apply layer normalization to the embedding updates.'}
-    )
-
-    global_readout: bool = field(
-        default=False,
-        metadata={'doc': 'Whether to use a global readout for the node embeddings.'}
-    )
-
-    residual_updates: bool = field(
-        default=True,
-        metadata={'doc': 'Whether to use residual updates for the node embeddings.'}
-    )
-
-    binarize_updates: bool = field(
-        default=False,
-        metadata={'doc': 'Whether to binarize the updates for the node embeddings.'}
-    )
+from .configs import AggregationFunction, UpdateFunction, MessageFunction, HyperparameterConfig
 
 
 class ForwardState:
@@ -99,11 +27,14 @@ class ForwardState:
         return self._readouts[name]()
 
 class RelationMessagePassingBase(nn.Module):
-    def __init__(self, config: RelationalGraphNeuralNetworkConfig):
+    def __init__(self, config: HyperparameterConfig, input_spec: tuple[Encoder, ...]):
         super().__init__()  # type: ignore
         self._embedding_size = config.embedding_size
         self._relation_mlps = nn.ModuleDict()
-        for relation_name, relation_arity in get_encoding(config.domain, config.input_specification):
+        # Get encoding relations from encoders
+        encoding_relations = get_encoding_from_encoders(config.domain, input_spec)
+
+        for relation_name, relation_arity in encoding_relations:
             input_size = relation_arity * config.embedding_size
             output_size = relation_arity * config.embedding_size
             if (input_size > 0) and (output_size > 0):
@@ -128,8 +59,8 @@ class RelationMessagePassingBase(nn.Module):
 
 
 class MeanRelationMessagePassing(RelationMessagePassingBase):
-    def __init__(self, config: RelationalGraphNeuralNetworkConfig):
-        super().__init__(config)
+    def __init__(self, config: HyperparameterConfig, input_spec: tuple[Encoder, ...]):
+        super().__init__(config, input_spec)
 
     def forward(self, node_embeddings: torch.Tensor, relations: dict[str, torch.Tensor]) -> torch.Tensor:
         output_messages, output_indices = self._compute_messages_and_indices(node_embeddings, relations)
@@ -142,8 +73,8 @@ class MeanRelationMessagePassing(RelationMessagePassingBase):
 
 
 class SumRelationMessagePassing(RelationMessagePassingBase):
-    def __init__(self, config: RelationalGraphNeuralNetworkConfig):
-        super().__init__(config)
+    def __init__(self, config: HyperparameterConfig, input_spec: tuple[Encoder, ...]):
+        super().__init__(config, input_spec)
 
     def forward(self, node_embeddings: torch.Tensor, relations: dict[str, torch.Tensor]) -> torch.Tensor:
         output_messages, output_indices = self._compute_messages_and_indices(node_embeddings, relations)
@@ -153,8 +84,8 @@ class SumRelationMessagePassing(RelationMessagePassingBase):
 
 
 class HardMaximumRelationMessagePassing(RelationMessagePassingBase):
-    def __init__(self, config: RelationalGraphNeuralNetworkConfig):
-        super().__init__(config)
+    def __init__(self, config: HyperparameterConfig, input_spec: tuple[Encoder, ...]):
+        super().__init__(config, input_spec)
 
     def forward(self, node_embeddings: torch.Tensor, relations: dict[str, torch.Tensor]) -> torch.Tensor:
         output_messages, output_indices = self._compute_messages_and_indices(node_embeddings, relations)
@@ -164,8 +95,8 @@ class HardMaximumRelationMessagePassing(RelationMessagePassingBase):
 
 
 class SmoothMaximumRelationMessagePassing(RelationMessagePassingBase):
-    def __init__(self, config: RelationalGraphNeuralNetworkConfig):
-        super().__init__(config)
+    def __init__(self, config: HyperparameterConfig, input_spec: tuple[Encoder, ...]):
+        super().__init__(config, input_spec)
 
     def forward(self, node_embeddings: torch.Tensor, relations: dict[str, torch.Tensor]) -> torch.Tensor:
         output_messages, output_indices = self._compute_messages_and_indices(node_embeddings, relations)
@@ -182,18 +113,18 @@ class SmoothMaximumRelationMessagePassing(RelationMessagePassingBase):
 
 
 class RelationalMessagePassingModule(nn.Module):
-    def __init__(self, config: RelationalGraphNeuralNetworkConfig):
+    def __init__(self, config: HyperparameterConfig, input_spec: tuple[Encoder, ...]):
         super().__init__()  # type: ignore
         self._config = config
         self._relation_network: RelationMessagePassingBase
         if config.message_aggregation == AggregationFunction.Add:
-            self._relation_network = SumRelationMessagePassing(config)
+            self._relation_network = SumRelationMessagePassing(config, input_spec)
         elif config.message_aggregation == AggregationFunction.Mean:
-            self._relation_network = MeanRelationMessagePassing(config)
+            self._relation_network = MeanRelationMessagePassing(config, input_spec)
         elif config.message_aggregation == AggregationFunction.SmoothMaximum:
-            self._relation_network = SmoothMaximumRelationMessagePassing(config)
+            self._relation_network = SmoothMaximumRelationMessagePassing(config, input_spec)
         elif config.message_aggregation == AggregationFunction.HardMaximum:
-            self._relation_network = HardMaximumRelationMessagePassing(config)
+            self._relation_network = HardMaximumRelationMessagePassing(config, input_spec)
         else:
             raise ValueError(f'aggregation is not one of ["{AggregationFunction.Add}", "{AggregationFunction.Mean}", "{AggregationFunction.SmoothMaximum}", "{AggregationFunction.HardMaximum}"]')
         if config.global_readout:
@@ -214,7 +145,7 @@ class RelationalMessagePassingModule(nn.Module):
     def clear_hooks(self) -> None:
         self._hooks.clear()
 
-    def forward(self, input: TensorInput) -> torch.Tensor:
+    def forward(self, input: EncodedTensors) -> torch.Tensor:
         device = input.node_sizes.device
         node_embeddings: torch.Tensor = torch.zeros([int(input.node_sizes.sum()), self._config.embedding_size], dtype=torch.float, requires_grad=True, device=device)
         for iteration in range(self._config.num_layers):
@@ -237,27 +168,27 @@ class RelationalMessagePassingModule(nn.Module):
 
 
 class ObjectScalarReadout(nn.Module):
-    def __init__(self, config: RelationalGraphNeuralNetworkConfig):
+    def __init__(self, config: HyperparameterConfig):
         super().__init__()  # type: ignore
         self._object_readout = SumReadout(config.embedding_size, 1)
 
-    def forward(self, node_embeddings: torch.Tensor, input: TensorInput):
+    def forward(self, node_embeddings: torch.Tensor, input: EncodedTensors):
         object_embeddings = node_embeddings.index_select(0, input.object_indices)
         return self._object_readout(object_embeddings, input.object_sizes).view(-1)
 
 
 class ObjectEmbeddingReadout(nn.Module):
-    def forward(self, node_embeddings: torch.Tensor, input: TensorInput):
+    def forward(self, node_embeddings: torch.Tensor, input: EncodedTensors):
         return node_embeddings.index_select(0, input.object_indices)
 
 
 class ActionScalarReadout(nn.Module):
-    def __init__(self, config: RelationalGraphNeuralNetworkConfig):
+    def __init__(self, config: HyperparameterConfig):
         super().__init__()  # type: ignore
         self._object_readout = SumReadout(config.embedding_size, config.embedding_size)
         self._action_value = MLP(2 * config.embedding_size, 1)
 
-    def forward(self, node_embeddings: torch.Tensor, input: TensorInput) -> list[torch.Tensor]:
+    def forward(self, node_embeddings: torch.Tensor, input: EncodedTensors) -> list[torch.Tensor]:
         action_embeddings = node_embeddings.index_select(0, input.action_indices)
         object_embeddings = node_embeddings.index_select(0, input.object_indices)
         object_aggregation: torch.Tensor = self._object_readout(object_embeddings, input.object_sizes)
@@ -267,39 +198,32 @@ class ActionScalarReadout(nn.Module):
 
 
 class ActionEmbeddingReadout(nn.Module):
-    def forward(self, node_embeddings: torch.Tensor, input: TensorInput):
+    def forward(self, node_embeddings: torch.Tensor, input: EncodedTensors):
         return node_embeddings.index_select(0, input.action_indices)
 
 
 class RelationalGraphNeuralNetwork(nn.Module):
-    def __init__(self, config: RelationalGraphNeuralNetworkConfig):
+    def __init__(self, config: HyperparameterConfig, input_spec: tuple[Encoder, ...], output_spec: list[tuple[str, Decoder]]):
         """
         Relational Graph Neural Network (RGNN) for planning states.
 
         :param config: The config of the R-GNN.
         :type config: RelationalGraphNeuralNetworkConfig
+        :param input_spec: The encoders that define how to transform PDDL structures into graph neural network inputs. For example, (StateEncoder(), GoalEncoder(), GroundActionsEncoder()) indicates that each instance must be a tuple containing a state, followed by a goal, followed by actions.
+        :type input_spec: tuple[Encoder, ...]
+        :param output_spec: The named outputs of the forward pass using decoder objects. For example, [("q_values", ActionScalarDecoder(config)), ("state_value", ObjectsScalarDecoder(config))] defines two outputs with different readout functions.
+        :type output_spec: list[tuple[str, Decoder]]
         """
-        super().__init__()  # type: ignore
+        super().__init__()
         self._config = config
-        self._mpnn_module = RelationalMessagePassingModule(config)
+        self._input_spec = input_spec
+        self._output_spec = output_spec
+        self._mpnn_module = RelationalMessagePassingModule(config, input_spec)
         self._readouts = nn.ModuleDict()
-        assert all([len(output) == 3 for output in config.output_specification]), 'The output specification must consist of a name, an output type, and an output node type.'
-        for output_name, output_node_type, output_value_type in config.output_specification:
+        for output_name, decoder in output_spec:
             assert isinstance(output_name, str), 'The first part of the output specification must be a name.'
-            assert isinstance(output_node_type, OutputNodeType), 'The third part of the output specification must be an output node type.'
-            assert isinstance(output_value_type, OutputValueType), 'The second part of the output specification must be an output type.'
-            readout: ObjectScalarReadout | ObjectEmbeddingReadout | ActionScalarReadout | ActionEmbeddingReadout | None = None
-            if (output_node_type == OutputNodeType.Objects) and (output_value_type == OutputValueType.Scalar):
-                readout = ObjectScalarReadout(config)
-            if (output_node_type == OutputNodeType.Objects) and (output_value_type == OutputValueType.Embeddings):
-                readout = ObjectEmbeddingReadout()
-            if (output_node_type == OutputNodeType.Action) and (output_value_type == OutputValueType.Scalar):
-                readout = ActionScalarReadout(config)
-            if (output_node_type == OutputNodeType.Action) and (output_value_type == OutputValueType.Embeddings):
-                readout = ActionEmbeddingReadout()
-            if readout is None:
-                raise NotImplementedError(f'Output "{output_value_type}" over "{output_node_type}" is not implemented yet.')
-            self._readouts.add_module(output_name, readout)
+            assert isinstance(decoder, Decoder), 'The second part of the output specification must be a Decoder.'
+            self._readouts.add_module(output_name, decoder)
         self._dummy = nn.Parameter(torch.empty(0))
         self._hooks: list[Callable[[ForwardState], None]] = []
 
@@ -307,7 +231,7 @@ class RelationalGraphNeuralNetwork(nn.Module):
         for hook in self._hooks:
             hook(forward_state)
 
-    def get_config(self) -> RelationalGraphNeuralNetworkConfig:
+    def get_config(self) -> HyperparameterConfig:
         return self._config
 
     def get_layer_count(self) -> int:
@@ -326,21 +250,25 @@ class RelationalGraphNeuralNetwork(nn.Module):
         return self._dummy.device
 
     def forward(self, x: list[tuple]) -> ForwardState:  # type: ignore
-        # Create input
+        # Create input using encoder-based specification
         assert isinstance(x, list), 'Expected input to be a list.'
-        input = encode_input(x, self._config.input_specification, self.get_device())
+        input = encode_input_from_encoders(x, self._input_spec, self.get_device())
         # Pass the input through the MPNN module
         if len(self._hooks) > 0:
             def hook_function(layer_index: 'int', node_embeddings: 'torch.Tensor') -> 'None':
                 nonlocal self, input
-                curried_readouts = { name: lambda: readout(node_embeddings, input) for name, readout in self._readouts.items() }
+                def make_readout_func(readout: Any) -> Callable[[], Any]:
+                    return lambda: readout(node_embeddings, input)
+                curried_readouts = { name: make_readout_func(readout) for name, readout in self._readouts.items() }
                 forward_state = ForwardState(layer_index, curried_readouts)
                 self._notify_hooks(forward_state)
             self._mpnn_module.add_hook(hook_function)
         node_embeddings = self._mpnn_module.forward(input)
         if len(self._hooks) > 0:
             self._mpnn_module.clear_hooks()
-        curried_readouts = { name: lambda: readout(node_embeddings, input) for name, readout in self._readouts.items() }
+        def make_readout_func(readout: Any) -> Callable[[], Any]:
+            return lambda: readout(node_embeddings, input)
+        curried_readouts = { name: make_readout_func(readout) for name, readout in self._readouts.items() }
         return ForwardState(self._config.num_layers - 1, curried_readouts)
 
     def clone(self) -> 'RelationalGraphNeuralNetwork':
@@ -350,7 +278,7 @@ class RelationalGraphNeuralNetwork(nn.Module):
         :return: A new instance of RelationalGraphNeuralNetwork with the same weights and hyperparameters.
         :rtype: RelationalGraphNeuralNetwork
         """
-        model_clone = RelationalGraphNeuralNetwork(self._config)
+        model_clone = RelationalGraphNeuralNetwork(self._config, self._input_spec, self._output_spec)
         model_clone.load_state_dict(self.state_dict())
         return model_clone.to(self.get_device())
 
@@ -362,7 +290,7 @@ class RelationalGraphNeuralNetwork(nn.Module):
         """
         destination_model.load_state_dict(self.state_dict())
 
-    def save(self, path: Union[Path, str], extras: dict = {}) -> None:  # type: ignore
+    def save(self, path: Union[Path, str], extras: dict = {}) -> None:
         """
         Saves the model's state and hyperparameters to a file.
         The parameter `extras` can be used to store additional information in the checkpoint, e.g., the optimizer state.
@@ -374,11 +302,17 @@ class RelationalGraphNeuralNetwork(nn.Module):
         """
         config_dict = { f.name: getattr(self._config, f.name) for f in fields(self._config) }
         del config_dict['domain']  # The domain is cannot be serialized.
-        checkpoint = { 'model': self.state_dict(), 'config': config_dict, 'extras': extras }  # type: ignore
-        torch.save(checkpoint, path)  # type: ignore
+        checkpoint = {
+            "model": self.state_dict(),
+            "config": config_dict,
+            "input_spec": self._input_spec,
+            "output_spec": self._output_spec,
+            "extras": extras
+        }
+        torch.save(checkpoint, path)
 
     @staticmethod
-    def load(domain: mm.Domain, path: Union[Path, str], device: torch.device) -> tuple['RelationalGraphNeuralNetwork', dict]:  # type: ignore
+    def load(domain: mm.Domain, path: Union[Path, str], device: torch.device) -> tuple['RelationalGraphNeuralNetwork', dict]:
         """
         Loads a model from a checkpoint file.
 
@@ -394,9 +328,11 @@ class RelationalGraphNeuralNetwork(nn.Module):
         # weights_only=False is needed due to unpickle errors related to our enums.
         checkpoint = torch.load(path, map_location=device, weights_only=False)
         config_dict = checkpoint['config']
+        input_spec = checkpoint['input_spec']
+        output_spec = checkpoint['output_spec']
         model_dict = checkpoint['model']
         extras_dict = checkpoint['extras']
-        config = RelationalGraphNeuralNetworkConfig(domain=domain, **config_dict)
-        model = RelationalGraphNeuralNetwork(config)
+        config = HyperparameterConfig(domain=domain, **config_dict)
+        model = RelationalGraphNeuralNetwork(config, input_spec, output_spec)
         model.load_state_dict(model_dict)
         return model.to(device), extras_dict

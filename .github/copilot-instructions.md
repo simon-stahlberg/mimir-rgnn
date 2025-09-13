@@ -57,16 +57,17 @@ pip install -e .[dev]
    domain = mm.Domain(test_dir / 'blocks' / 'domain.pddl')
    problem = mm.Problem(domain, test_dir / 'blocks' / 'problem.pddl')
    
-   config = rgnn.RelationalGraphNeuralNetworkConfig(
+   config = rgnn.HyperparameterConfig(
        domain=domain,
-       input_specification=(rgnn.InputType.State, rgnn.InputType.GroundActions, rgnn.InputType.Goal),
-       output_specification=[('q_values', rgnn.OutputNodeType.Action, rgnn.OutputValueType.Scalar)],
        embedding_size=32,
        num_layers=3,
        message_aggregation=rgnn.AggregationFunction.Mean
    )
    
-   model = rgnn.RelationalGraphNeuralNetwork(config)
+   input_spec = (rgnn.StateEncoder(), rgnn.GroundActionsEncoder(), rgnn.GoalEncoder())
+   output_spec = [('q_values', rgnn.ActionScalarDecoder(config))]
+   
+   model = rgnn.RelationalGraphNeuralNetwork(config, input_spec, output_spec)
    initial_state = problem.get_initial_state()
    initial_actions = initial_state.generate_applicable_actions()
    goal = problem.get_goal_condition()
@@ -88,7 +89,13 @@ python -m pytest tests/ -v     # Takes 3 seconds
 mypy pymimir_rgnn/            # Takes 16 seconds  
 ```
 
-No linting tools (black/flake8/ruff) are configured - rely on mypy for code quality.
+### Key Design Principles
+1. **Type Safety First**: All public interfaces must be fully typed
+2. **Declarative Configuration**: Use dataclasses with metadata for configuration
+3. **Class-Based Extensibility**: Use inheritance for encoders and decoders instead of enums
+4. **Separation of Concerns**: Clean module boundaries and responsibilities
+5. **PyTorch Integration**: Leverage PyTorch ecosystem and conventions
+6. **PDDL Integration**: Deep integration with Mimir's PDDL capabilities
 
 ## Project Structure
 
@@ -97,7 +104,10 @@ mimir-rgnn/
 ├── pymimir_rgnn/           # Main package
 │   ├── __init__.py        # Public API exports
 │   ├── model.py           # Core R-GNN model and configuration classes
-│   ├── encodings.py       # Input/output type definitions and encoding logic  
+│   ├── bases.py           # Base classes for encoders and decoders
+│   ├── encoders.py        # Input encoder implementations
+│   ├── decoders.py        # Output decoder implementations
+│   ├── configs.py         # Configuration classes and enums
 │   ├── modules.py         # Reusable PyTorch neural network modules
 │   └── utils.py           # Helper functions and utilities
 ├── tests/                  # Test suite - 22 parameterized tests
@@ -117,25 +127,50 @@ Use dataclasses with field metadata for all configuration:
 
 ```python
 @dataclass
-class RelationalGraphNeuralNetworkConfig:
+class HyperparameterConfig:
     domain: mm.Domain = field(metadata={'doc': 'The domain of the planning problem.'})
-    input_specification: tuple[InputType, ...] = field(...)
-    output_specification: list[tuple[str, OutputNodeType, OutputValueType]] = field(...)
+    embedding_size: int = field(default=32, metadata={'doc': 'Size of node embeddings.'})
+    num_layers: int = field(default=3, metadata={'doc': 'Number of message passing layers.'})
+    message_aggregation: AggregationFunction = field(default=AggregationFunction.Mean, metadata={'doc': 'Message aggregation function.'})
     # ... other configuration fields
 ```
 
-### Key Enums and Types
+**Key Patterns**:
+- Use `field()` with metadata for documentation
+- Type all attributes with proper generics
+- Provide sensible defaults for optional parameters
+- Validate configurations in `__post_init__` if needed
 
-**Input Types** (encodings.py):
-- `InputType.State`: Current planning state
-- `InputType.Goal`: Goal specification  
-- `InputType.GroundActions`: Available actions
-- `InputType.TransitionEffects`: Action effects
+### 2. Encoder/Decoder System (bases.py, encoders.py, decoders.py)
 
-**Output Configuration**:
-- Named outputs: `('q_values', OutputNodeType.Action, OutputValueType.Scalar)`
-- Node types: All, Objects, Action
-- Value types: Scalar, Embeddings
+The encoding system transforms PDDL structures into graph neural network inputs using class-based encoders:
+
+**Encoder Classes**:
+- `StateEncoder()`: Current planning state
+- `GoalEncoder()`: Goal specification  
+- `GroundActionsEncoder()`: Available actions
+- `TransitionEffectsEncoder()`: Action effects
+
+**Decoder Classes**:
+- `ActionScalarDecoder(config)`: Scalar values over actions
+- `ActionEmbeddingDecoder()`: Embeddings over actions
+- `ObjectsScalarDecoder(config)`: Scalar values over objects  
+- `ObjectsEmbeddingDecoder()`: Embeddings over objects
+
+**Critical Functions**:
+- `Encoder.get_relations()`: Determines relational structure from domain
+- `Encoder.encode()`: Transforms PDDL data into intermediate format
+- `Decoder.forward()`: Implements direct readout logic from node embeddings
+
+### 3. Neural Network Modules (modules.py)
+
+Standard PyTorch modules following library conventions:
+- Inherit from `nn.Module`
+- Implement `forward()` method
+- Use proper tensor typing
+- Support batched operations
+
+### 4. Main R-GNN Model (model.py)
 
 **Aggregation Functions**:
 - `AggregationFunction.Add`: Sum aggregation
@@ -145,10 +180,10 @@ class RelationalGraphNeuralNetworkConfig:
 
 ### Main R-GNN Model
 The `RelationalGraphNeuralNetwork` class:
-- Takes configuration object in constructor
+- Takes hyperparameter config, input specification tuple, and output specification list
 - Implements PyTorch `nn.Module` interface
 - Supports batch processing of planning instances
-- Returns structured outputs based on configuration
+- Returns structured outputs based on decoder configuration
 
 ## Development Standards
 
@@ -159,15 +194,58 @@ The `RelationalGraphNeuralNetwork` class:
 # ✅ Correct - fully typed
 def encode_input(
     input: list[tuple], 
-    input_specification: tuple[InputType, ...], 
+    input_specification: tuple[Encoder, ...], 
     device: torch.device
-) -> TensorInput:
+) -> EncodedTensors:
     """Process planning instances into tensor format."""
 
 # ❌ Wrong - missing types  
 def encode_input(input, input_specification, device):
     """Process planning instances into tensor format."""
 ```
+
+### Configuration Pattern
+Use dataclasses with field metadata for all configuration:
+
+```python
+@dataclass
+class MyConfig:
+    required_param: str = field(
+        metadata={'doc': 'Required parameter description.'}
+    )
+    
+    optional_param: int = field(
+        default=42,
+        metadata={'doc': 'Optional parameter with default.'}
+    )
+```
+
+### Class-Based Encoder/Decoder Pattern
+Use inheritance for extensibility instead of enums:
+
+```python
+class CustomEncoder(Encoder):
+    def get_relations(self, domain: mm.Domain) -> list[tuple[str, int]]:
+        relations = super().get_relations(domain) if hasattr(super(), 'get_relations') else []
+        relations.append(("custom_relation", 2))
+        return relations
+    
+    def encode(self, input_value: Any, intermediate: EncodedLists, state: mm.State) -> int:
+        # Custom encoding implementation
+        return nodes_added
+
+class CustomDecoder(Decoder):
+    def __init__(self, config: HyperparameterConfig):
+        super().__init__()
+        self._readout = MLP(config.embedding_size, 1)
+    
+    def forward(self, node_embeddings: torch.Tensor, input: EncodedTensors) -> torch.Tensor:
+        # Direct readout implementation
+        return self._readout(node_embeddings)
+```
+
+### Error Handling
+Use assertions with descriptive messages for validation:
 
 ### Testing Patterns
 Use pytest parametrization for comprehensive testing:
@@ -195,7 +273,8 @@ import torch.nn as nn
 import pymimir as mm
 
 # 3. Local imports
-from .encodings import InputType, OutputValueType
+from .encoders import StateEncoder
+from .decoders import ActionScalarDecoder
 from .modules import MLP, SumReadout
 ```
 
@@ -209,17 +288,16 @@ assert len(input_specification) == len(set(input_specification)), \
 
 ## Common Development Tasks
 
-### Adding New Input Types
-1. Add enum value to `InputType` in encodings.py
-2. Update `get_encoding()` to handle new type
-3. Update `encode_input()` to process new input format
+### Adding New Encoder Classes
+1. Create new class inheriting from `Encoder` in encoders.py
+2. Implement `get_relations()` to define graph relations
+3. Implement `encode()` to process input format
 4. Add corresponding tests with parameterization
 
-### Extending Output Specifications
-1. Consider if new `OutputNodeType` or `OutputValueType` needed
-2. Update readout logic in model
-3. Ensure backward compatibility with existing configs
-4. Add tests covering the new output type
+### Adding New Decoder Classes
+1. Create new class inheriting from `Decoder` in decoders.py
+2. Implement `forward()` method for direct readout logic
+3. Add tests covering the new decoder functionality
 
 ### PDDL Integration Patterns
 ```python
@@ -234,6 +312,42 @@ goal = mm.GroundConjunctiveCondition(...)
 action = mm.GroundAction(...)
 objects = action.get_objects()
 ```
+
+### Graph Neural Network Concepts
+- **Nodes**: Objects, actions, or combined entity representations
+- **Relations**: Derived from PDDL predicates and action structures
+- **Message Passing**: Communication between related nodes
+- **Aggregation**: Combining messages (sum, mean, max variants)
+- **Readout**: Extracting final outputs from node embeddings
+
+## Common Development Tasks
+
+### Adding New Encoder Classes
+1. Create new class inheriting from `Encoder` in encoders.py
+2. Implement `get_relations()` to define graph relations
+3. Implement `encode()` to process input format
+4. Add corresponding tests with parameterization
+
+### Adding New Decoder Classes
+1. Create new class inheriting from `Decoder` in decoders.py
+2. Implement `forward()` method for direct readout logic
+3. Add tests covering the new decoder functionality
+
+### Adding New Aggregation Functions
+1. Add enum value to `AggregationFunction` in configs.py
+2. Update model implementation to handle new function
+3. Add tests covering the new aggregation method
+
+### Extending Configuration
+1. Consider if new dataclass fields needed in HyperparameterConfig
+2. Ensure backward compatibility with existing configs
+3. Update validation logic if needed
+
+### Performance Optimization
+- Focus on tensor operations efficiency
+- Batch processing for multiple planning instances
+- GPU memory management for large graphs
+- Sparse tensor usage where appropriate
 
 ### Tensor Device Consistency
 ```python
@@ -261,6 +375,20 @@ tensor2 = torch.tensor(other_data, device=device)
 ### Type System Issues
 Always validate Mimir object types:
 ```python
+# ❌ Wrong - will cause mypy errors
+def process_data(data):  # Missing type annotation
+    return data.some_method()
+
+# ✅ Correct - fully typed
+def process_data(data: EncodedTensors) -> torch.Tensor:
+    return data.flattened_relations['predicate_name']
+```
+
+### PDDL Integration Errors
+```python
+# ❌ Wrong - not checking types from Mimir
+goal = instance[goal_index]  # Could be anything
+
 # ✅ Correct - validate types from Mimir
 goal = instance[goal_index]
 assert isinstance(goal, mm.GroundConjunctiveCondition), \

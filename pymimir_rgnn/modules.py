@@ -4,7 +4,7 @@ import torch.nn as nn
 
 class MLP(nn.Module):
     def __init__(self, input_size: int, output_size: int):
-        super().__init__()  # type: ignore
+        super().__init__()
         self.input_size = input_size
         self.output_size = output_size
         self._inner = nn.Linear(input_size, input_size, True)
@@ -16,7 +16,7 @@ class MLP(nn.Module):
 
 class SumReadout(nn.Module):
     def __init__(self, input_size: int, output_size: int):
-        super().__init__()  # type: ignore
+        super().__init__()
         self._value = MLP(input_size, output_size)
 
     def forward(self, node_embeddings: torch.Tensor, node_sizes: torch.Tensor) -> torch.Tensor:
