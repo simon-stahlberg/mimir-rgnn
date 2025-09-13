@@ -63,7 +63,7 @@ Mimir-RGNN follows professional Python development practices:
   import pymimir as mm
   
   # Local imports last
-  from .encodings import InputType
+  from .encodings import StateEncoder, ActionScalarDecoder
   from .modules import MLP
   ```
 
@@ -74,16 +74,16 @@ Mimir-RGNN follows professional Python development practices:
 - All public interfaces **must** include docstrings
 - Use Google-style docstrings:
   ```python
-  def encode_input(input: list[tuple], input_specification: tuple[InputType, ...], device: torch.device) -> TensorInput:
+  def encode_input(input: list[tuple], input_specification: tuple[Encoder, ...], device: torch.device) -> EncodedInput:
       """Encode input data into tensor format for R-GNN processing.
       
       Args:
           input: List of input tuples containing states, goals, actions, etc.
-          input_specification: Specification of input types and their order.
+          input_specification: Specification of encoders and their order.
           device: Target PyTorch device for tensor placement.
           
       Returns:
-          TensorInput object containing encoded relational graph data.
+          EncodedInput object containing encoded relational graph data.
           
       Raises:
           AssertionError: If input specification validation fails.
@@ -107,16 +107,27 @@ class MyConfig:
     )
 ```
 
-### Enum Usage
+### Class-Based Encoder/Decoder System
 
-Use enums for categorical configuration options:
+Use inheritance from base classes for extensibility:
 
 ```python
-class AggregationFunction(Enum):
-    Add = 'add'
-    Mean = 'mean'
-    HardMaximum = 'hmax'
-    SmoothMaximum = 'smax'
+class CustomEncoder(Encoder):
+    def get_relations(self, domain: mm.Domain) -> list[tuple[str, int]]:
+        return [("custom_relation", 2)]
+    
+    def encode(self, input_value: Any, intermediate: EncodedInput, state: mm.State) -> int:
+        # Custom encoding logic
+        return nodes_added
+
+class CustomDecoder(Decoder):
+    def __init__(self, embedding_size: int):
+        super().__init__()
+        self._readout = MLP(embedding_size, 1)
+    
+    def forward(self, node_embeddings: torch.Tensor, input: EncodedInput) -> torch.Tensor:
+        # Direct readout implementation
+        return self._readout(node_embeddings)
 ```
 
 ## Type Safety Requirements
@@ -138,7 +149,7 @@ def create_model(config: RelationalGraphNeuralNetworkConfig) -> RelationalGraphN
     return RelationalGraphNeuralNetwork(config)
 
 # Class with typed attributes  
-class TensorInput:
+class EncodedInput:
     def __init__(self) -> None:
         self.flattened_relations: dict[str, torch.LongTensor] = {}
         self.node_count: int = 0
@@ -187,7 +198,15 @@ from pymimir_rgnn import *
 def test_model_creation(domain: str, aggregation: AggregationFunction, 
                        layers: int, embedding_size: int):
     """Test R-GNN model creation with various configurations."""
-    # Test implementation here
+    # Test implementation using encoder/decoder classes
+    config = RelationalGraphNeuralNetworkConfig(
+        domain=load_domain(domain),
+        input_specification=(StateEncoder(), GoalEncoder()),
+        output_specification=[('q_values', ActionScalarDecoder(embedding_size))],
+        embedding_size=embedding_size,
+        num_layers=layers,
+        message_aggregation=aggregation
+    )
 ```
 
 ### Test Requirements

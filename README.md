@@ -41,7 +41,7 @@ import pymimir_rgnn as rgnn
 # Load a PDDL domain
 domain = mm.Domain('path/to/domain.pddl')
 
-# Configure using the class-based encoder API
+# Configure using the class-based encoder/decoder API
 config = rgnn.RelationalGraphNeuralNetworkConfig(
     domain=domain,
     input_specification=(
@@ -50,8 +50,8 @@ config = rgnn.RelationalGraphNeuralNetworkConfig(
         rgnn.GroundActionsEncoder()
     ),
     output_specification=[
-        ('q_values', rgnn.ActionScalarOutput()),
-        ('state_value', rgnn.ObjectsScalarOutput())
+        ('q_values', rgnn.ActionScalarDecoder(64)),
+        ('state_value', rgnn.ObjectsScalarDecoder(64))
     ],
     embedding_size=64,
     num_layers=5,
@@ -80,7 +80,7 @@ state_value = output.readout('state_value')
 Central configuration class that defines:
 - **Domain**: The PDDL domain for the planning problem
 - **Input Specification**: Types of inputs using encoder classes
-- **Output Specification**: Named outputs with encoder classes
+- **Output Specification**: Named outputs with decoder classes
 - **Model Parameters**: Embedding size, number of layers, aggregation functions
 
 #### `RelationalGraphNeuralNetwork`
@@ -98,12 +98,12 @@ The main R-GNN model class that:
 - **`TransitionEffectsEncoder()`**: Action effects and transitions
 - **`SuccessorsEncoder()`**: State successors
 
-### Output Encoders
+### Output Decoders
 
-- **`ActionScalarOutput()`**: Scalar values over actions
-- **`ActionEmbeddingOutput()`**: Embeddings over actions  
-- **`ObjectsScalarOutput()`**: Scalar values over objects
-- **`ObjectsEmbeddingOutput()`**: Embeddings over objects
+- **`ActionScalarDecoder(embedding_size)`**: Scalar values over actions
+- **`ActionEmbeddingDecoder()`**: Embeddings over actions  
+- **`ObjectsScalarDecoder(embedding_size)`**: Scalar values over objects
+- **`ObjectsEmbeddingDecoder()`**: Embeddings over objects
 
 ### Aggregation Functions
 
@@ -114,7 +114,7 @@ The main R-GNN model class that:
 
 ## Extensibility
 
-The class-based encoder API allows you to extend the library by inheriting from base encoder classes:
+The class-based encoder/decoder API allows you to extend the library by inheriting from base classes:
 
 ### Custom Input Encoders
 
@@ -131,7 +131,7 @@ class CustomStateEncoder(rgnn.StateEncoder):
         
         return relations
     
-    def encode(self, input_value: Any, intermediate: rgnn.ListInput, state: mm.State) -> int:
+    def encode(self, input_value: Any, intermediate: rgnn.EncodedInput, state: mm.State) -> int:
         # Get standard encoding
         nodes_added = super().encode(input_value, intermediate, state)
         
@@ -144,28 +144,35 @@ class CustomStateEncoder(rgnn.StateEncoder):
 config = rgnn.RelationalGraphNeuralNetworkConfig(
     domain=domain,
     input_specification=(CustomStateEncoder(), rgnn.GoalEncoder()),
-    output_specification=[('value', rgnn.ObjectsScalarOutput())],
+    output_specification=[('value', rgnn.ObjectsScalarDecoder(64))],
     # ... other parameters
 )
 ```
 
-### Custom Output Encoders  
+### Custom Output Decoders  
 
 ```python
-class CustomActionOutput(rgnn.ActionScalarOutput):
-    """Custom action output with specialized processing."""
+class CustomActionDecoder(rgnn.ActionScalarDecoder):
+    """Custom action decoder with specialized readout logic."""
     
-    def get_output_node_type(self) -> str:
-        return "action"
+    def __init__(self, embedding_size: int):
+        super().__init__(embedding_size)
+        # Add custom readout components
+        from pymimir_rgnn.modules import MLP
+        self._custom_layer = MLP(embedding_size, embedding_size)
     
-    def get_output_value_type(self) -> str:
-        return "scalar"
+    def forward(self, node_embeddings: torch.Tensor, input: rgnn.EncodedInput) -> torch.Tensor:
+        # Implement custom readout logic
+        action_embeddings = node_embeddings.index_select(0, input.action_indices)
+        custom_embeddings = self._custom_layer(action_embeddings)
+        # ... custom processing ...
+        return custom_embeddings
 
 # Use in configuration  
 config = rgnn.RelationalGraphNeuralNetworkConfig(
     domain=domain,
     input_specification=(rgnn.StateEncoder(),),
-    output_specification=[('custom_q', CustomActionOutput())],
+    output_specification=[('custom_q', CustomActionDecoder(64))],
     # ... other parameters
 )
 ```
