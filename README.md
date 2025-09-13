@@ -15,7 +15,7 @@
 - **🔧 Flexible Configuration**: Declarative configuration system for input/output specifications
 - **🎯 Planning-Focused**: Designed specifically for AI planning and reinforcement learning applications
 - **📊 Multiple Aggregation Functions**: Support for various message aggregation strategies
-- **🏗️ Professional API**: Clean, type-safe interface with comprehensive documentation
+- **🏗️ Typed API**: Clean and type-safe interface
 
 ## Installation
 
@@ -46,7 +46,7 @@ config = rgnn.RelationalGraphNeuralNetworkConfig(
     input_specification=(rgnn.InputType.State, rgnn.InputType.Goal),
     output_specification=[('q_values', rgnn.OutputNodeType.Action, rgnn.OutputValueType.Scalar)],
     embedding_size=64,
-    num_layers=5,
+    num_layers=30,
     message_aggregation=rgnn.AggregationFunction.HardMaximum
 )
 
@@ -57,7 +57,7 @@ model = rgnn.RelationalGraphNeuralNetwork(config)
 # states = [...]  # List of Mimir State objects
 # goals = [...]   # List of Mimir GroundConjunctiveCondition objects
 # actions = [...]  # List of lists of Mimir GroundAction objects
-# 
+#
 # inputs = list(zip(states, actions, goals))
 # outputs = model(inputs)
 ```
@@ -102,7 +102,7 @@ output_specification = [
 ### Aggregation Functions
 
 - **`AggregationFunction.Add`**: Sum aggregation
-- **`AggregationFunction.Mean`**: Mean aggregation  
+- **`AggregationFunction.Mean`**: Mean aggregation
 - **`AggregationFunction.HardMaximum`**: Hard maximum
 - **`AggregationFunction.SmoothMaximum`**: Smooth maximum (LogSumExp)
 
@@ -117,7 +117,7 @@ For an comprehensive example, visit:
 We welcome contributions! Please see our [Contributing Guidelines](CONTRIBUTING.md) for details on:
 - Development setup
 - Coding standards
-- Testing requirements  
+- Testing requirements
 - Pull request process
 
 ## License
@@ -129,12 +129,12 @@ This project is licensed under the GNU General Public License v3.0 or later. See
 If you use Mimir-RGNN in your research, please cite:
 
 ```bibtex
-@software{stahlberg2024mimir_rgnn,
-  author = {Simon St\r{a}hlberg},
-  title = {Mimir-RGNN: Relational Graph Neural Networks for AI Planning},
-  url = {https://github.com/simon-stahlberg/mimir-rgnn},
-  version = {<package version>},
-  year = {<year package version was released>}
+@inproceedings{stahlberg-bonet-geffner-icaps2022,
+  author       = {Simon St{\aa}hlberg and Blai Bonet and Hector Geffner},
+  title        = {Learning General Optimal Policies with Graph Neural Networks: Expressive Power, Transparency, and Limits},
+  booktitle    = {Proceedings of the Thirty-Second International Conference on Automated Planning and Scheduling, {ICAPS} 2022, Singapore (virtual), June 13-24, 2022},
+  pages        = {629--637},
+  year         = {2022}
 }
 ```
 

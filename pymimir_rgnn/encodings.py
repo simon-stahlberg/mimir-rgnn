@@ -180,7 +180,7 @@ def encode_input(input: list[tuple], input_specification: tuple[InputType, ...],
                     if effect_name not in relations: relations[effect_name] = term_ids
                     else: relations[effect_name].extend(term_ids)
                     # Add literals stating how this transition affects the goal.
-                    if any(x == effect.get_atom() for x in goal_condition):
+                    if any(x == effect.get_atom() for x in goal_condition):  # type: ignore
                         goal_effect_name = get_effect_name(effect.get_atom().get_predicate(), effect.get_polarity(), True)
                         goal_term_ids = [transition_global_id] + [term.get_index() + intermediate.node_count for term in effect.get_atom().get_terms()]
                         relations = intermediate.flattened_relations
