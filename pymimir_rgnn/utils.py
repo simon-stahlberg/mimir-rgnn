@@ -3,6 +3,16 @@ import torch
 
 
 def get_atom_name(atom: mm.GroundAtom, state: mm.State, is_goal_atom: bool) -> str:
+    """Generate a relation name for an atom based on its context.
+    
+    Args:
+        atom: The ground atom to generate a name for.
+        state: The current planning state.
+        is_goal_atom: Whether this atom is part of the goal condition.
+        
+    Returns:
+        String name for the relation representing this atom.
+    """
     if is_goal_atom:
         is_in_state = state.contains(atom)
         return get_predicate_name(atom.get_predicate(), True, is_in_state)
@@ -11,6 +21,19 @@ def get_atom_name(atom: mm.GroundAtom, state: mm.State, is_goal_atom: bool) -> s
 
 
 def get_predicate_name(predicate: mm.Predicate, is_goal_predicate: bool, is_true: bool) -> str:
+    """Generate a standardized name for predicate relations.
+    
+    Args:
+        predicate: The predicate to generate a name for.
+        is_goal_predicate: Whether this predicate appears in a goal context.
+        is_true: Whether the predicate is true in the current state.
+        
+    Returns:
+        Standardized string name for the predicate relation.
+        
+    Raises:
+        AssertionError: If the combination of parameters is invalid.
+    """
     assert (not is_goal_predicate and is_true) or (is_goal_predicate)
     if is_goal_predicate:
         truth_value = 'true' if is_true else 'false'
@@ -20,14 +43,40 @@ def get_predicate_name(predicate: mm.Predicate, is_goal_predicate: bool, is_true
 
 
 def get_effect_name(predicate: mm.Predicate, positive: bool, affects_goal: bool) -> str:
+    """Generate a name for effect relations.
+    
+    Args:
+        predicate: The predicate affected by the effect.
+        positive: Whether this is a positive (add) or negative (delete) effect.
+        affects_goal: Whether this effect affects a goal atom.
+        
+    Returns:
+        String name for the effect relation.
+    """
     return predicate.get_name() + ('_pos' if positive else '_neg') + ('_goal' if affects_goal else '')
 
 
 def get_effect_relation_name() -> str:
+    """Get the standard name for effect relations.
+    
+    Returns:
+        String name for the general effect relation.
+    """
     return 'effect_relation'
 
 
 def get_action_name(action: mm.Action | mm.GroundAction) -> str:
+    """Generate a standardized name for action relations.
+    
+    Args:
+        action: The action (grounded or ungrounded) to generate a name for.
+        
+    Returns:
+        String name for the action relation.
+        
+    Raises:
+        RuntimeError: If the argument is not a recognized action type.
+    """
     if isinstance(action, mm.GroundAction):
         return 'action_' + str(action.get_action().get_name())
     elif isinstance(action, mm.Action):  # type: ignore
@@ -37,6 +86,15 @@ def get_action_name(action: mm.Action | mm.GroundAction) -> str:
 
 
 def relations_to_tensors(term_id_groups: dict[str, list[int]], device: torch.device) -> dict[str, torch.Tensor]:
+    """Convert relation ID lists to tensors on the specified device.
+    
+    Args:
+        term_id_groups: Dictionary mapping relation names to lists of term IDs.
+        device: The torch device to place the tensors on.
+        
+    Returns:
+        Dictionary mapping relation names to tensor representations.
+    """
     result: dict[str, torch.Tensor] = {}
     for key, value in term_id_groups.items():
         result[key] = torch.tensor(value, dtype=torch.int, device=device, requires_grad=False)
