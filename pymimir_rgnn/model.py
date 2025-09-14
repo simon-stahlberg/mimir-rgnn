@@ -73,29 +73,6 @@ class RelationalMessagePassingModule(nn.Module):
         self._update = module_config.update_function
         self._relation_mlps = nn.ModuleDict()
 
-    def _compute_messages_and_indices(self, node_embeddings: torch.Tensor, relations: dict[str, torch.Tensor]):
-        """Compute messages and indices for all relations.
-
-        Args:
-            node_embeddings: The current node embeddings.
-            relations: Dictionary mapping relation names to their argument indices.
-
-        Returns:
-            Tuple of (messages, indices) for aggregation.
-        """
-        output_messages_list: list[torch.Tensor] = []
-        output_indices_list: list[torch.Tensor] = []
-        for relation_name, argument_indices in relations.items():
-            if argument_indices.numel() > 0:
-                argument_embeddings = torch.index_select(node_embeddings, 0, argument_indices)
-                argument_messages = self._message.forward(relation_name, argument_embeddings)
-                output_messages = (argument_embeddings.view_as(argument_messages) + argument_messages).view(-1, self._embedding_size)
-                output_messages_list.append(output_messages)
-                output_indices_list.append(argument_indices)
-        output_messages = torch.cat(output_messages_list, 0)
-        output_indices = torch.cat(output_indices_list, 0)
-        return output_messages, output_indices
-
     def forward(self, node_embeddings: torch.Tensor, relations: dict[str, torch.Tensor]) -> torch.Tensor:
         """Perform one step of message passing.
 
@@ -106,7 +83,7 @@ class RelationalMessagePassingModule(nn.Module):
         Returns:
             Updated node embeddings after message passing.
         """
-        messages, indices = self._compute_messages_and_indices(node_embeddings, relations)
+        messages, indices = self._message.forward(node_embeddings, relations)
         aggregated_messages = self._aggregation.forward(node_embeddings, messages, indices)
         return self._update.forward(node_embeddings, aggregated_messages)
 

@@ -23,6 +23,7 @@ class PredicateMLPMessages:
             config: The hyperparameter configuration containing embedding sizes.
             input_spec: The input specification to determine which relations exist.
         """
+        self._embedding_size = config.embedding_size
         self._relation_mlps = nn.ModuleDict()
         relations = get_relations_from_encoders(config.domain, input_spec)
         for relation_name, relation_arity in relations:
@@ -31,7 +32,7 @@ class PredicateMLPMessages:
             if (input_size > 0) and (output_size > 0):
                 self._relation_mlps[relation_name] = MLP(input_size, output_size)
 
-    def forward(self, relation_name: str, argument_embeddings: torch.Tensor) -> torch.Tensor:
+    def _forward_relation(self, relation_name: str, argument_embeddings: torch.Tensor) -> torch.Tensor:
         """Compute messages for a specific relation using its dedicated MLP.
 
         Args:
@@ -49,3 +50,26 @@ class PredicateMLPMessages:
         relation_module: MLP = self._relation_mlps[relation_name]  # type: ignore
         messages = relation_module(argument_embeddings.view(-1, relation_module.input_size))
         return messages
+
+    def forward(self, node_embeddings: torch.Tensor, relations: dict[str, torch.Tensor]):
+        """Compute messages and indices for all relations.
+
+        Args:
+            node_embeddings: The current node embeddings.
+            relations: Dictionary mapping relation names to their argument indices.
+
+        Returns:
+            Tuple of (messages, indices) for aggregation.
+        """
+        output_messages_list: list[torch.Tensor] = []
+        output_indices_list: list[torch.Tensor] = []
+        for relation_name, argument_indices in relations.items():
+            if argument_indices.numel() > 0:
+                argument_embeddings = torch.index_select(node_embeddings, 0, argument_indices)
+                argument_messages = self._forward_relation(relation_name, argument_embeddings)
+                output_messages = (argument_embeddings.view_as(argument_messages) + argument_messages).view(-1, self._embedding_size)
+                output_messages_list.append(output_messages)
+                output_indices_list.append(argument_indices)
+        output_messages = torch.cat(output_messages_list, 0)
+        output_indices = torch.cat(output_indices_list, 0)
+        return output_messages, output_indices

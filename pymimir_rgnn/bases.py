@@ -128,7 +128,7 @@ class AggregationFunction(ABC, torch.nn.Module):
 
 
 class MessageFunction(ABC, torch.nn.Module):
-    """Base class for message functions used in graph neural networks.
+    """Base class for message functions used in relational graph neural networks.
 
     Message functions compute messages between nodes based on their relations
     during the message passing phase of graph neural network computation.
@@ -139,15 +139,15 @@ class MessageFunction(ABC, torch.nn.Module):
         super().__init__()
 
     @abstractmethod
-    def forward(self, relation_name: str, argument_embeddings: torch.Tensor) -> torch.Tensor:
-        """Compute messages for a given relation and its argument embeddings.
+    def forward(self, node_embeddings: torch.Tensor, relations: dict[str, torch.Tensor]) -> torch.Tensor:
+        """Compute messages and indices for all relations.
 
         Args:
-            relation_name: The name of the relation for which to compute messages.
-            argument_embeddings: The embeddings of the arguments involved in the relation.
+            node_embeddings: The current node embeddings.
+            relations: Dictionary mapping relation names to their argument indices.
 
         Returns:
-            The computed messages with the same shape as argument_embeddings.
+            Tuple of (messages, indices) for aggregation.
         """
         pass
 
