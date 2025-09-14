@@ -10,21 +10,20 @@ DATA_DIR = TEST_DIR / 'data'
 
 
 @pytest.mark.parametrize("dom, agg, layers, size, gro, norm", [
-    ('blocks', AggregationFunction.HardMaximum, 2, 2, False, False),
-    ('blocks', AggregationFunction.SmoothMaximum, 3, 3, False, False),
-    ('blocks', AggregationFunction.Mean, 4, 4, False, True),
-    ('blocks', AggregationFunction.Add, 5, 5, True, False),
-    ('gripper', AggregationFunction.HardMaximum, 2, 2, True, False),
-    ('gripper', AggregationFunction.SmoothMaximum, 3, 3, True, False),
-    ('gripper', AggregationFunction.Mean, 4, 4, True, True),
-    ('gripper', AggregationFunction.Add, 5, 5, True, True),
+    ('blocks', HardMaximumAggregation(), 2, 2, False, False),
+    ('blocks', SmoothMaximumAggregation(), 3, 3, False, False),
+    ('blocks', MeanAggregation(), 4, 4, False, True),
+    ('blocks', SumAggregation(), 5, 5, True, False),
+    ('gripper', HardMaximumAggregation(), 2, 2, True, False),
+    ('gripper', SmoothMaximumAggregation(), 3, 3, True, False),
+    ('gripper', MeanAggregation(), 4, 4, True, True),
+    ('gripper', SumAggregation(), 5, 5, True, True),
 ])
 def test_create_model(dom: str, agg: AggregationFunction, layers: int, size: int, gro: bool, norm: bool):
     domain_path = DATA_DIR / dom / 'domain.pddl'
     domain = mm.Domain(domain_path)
     config = HyperparameterConfig(
         domain=domain,
-        message_aggregation=agg,
         num_layers=layers,
         embedding_size=size,
         global_readout=gro,
@@ -32,19 +31,19 @@ def test_create_model(dom: str, agg: AggregationFunction, layers: int, size: int
     )
     input_spec=(StateEncoder(), GroundActionsEncoder(), GoalEncoder())
     output_spec=[('q_values', ActionScalarDecoder(config))]
-    model = RelationalGraphNeuralNetwork(config, input_spec, output_spec)
+    model = RelationalGraphNeuralNetwork(config, input_spec, output_spec, agg, PredicateMLPMessages(config, input_spec), MLPUpdates(config))  # type: ignore
     assert model is not None
 
 
 @pytest.mark.parametrize("dom, agg, layers, size, gro, norm", [
-    ('blocks', AggregationFunction.HardMaximum, 2, 2, False, False),
-    ('blocks', AggregationFunction.SmoothMaximum, 3, 3, False, False),
-    ('blocks', AggregationFunction.Mean, 4, 4, False, True),
-    ('blocks', AggregationFunction.Add, 5, 5, True, False),
-    ('gripper', AggregationFunction.HardMaximum, 2, 2, True, False),
-    ('gripper', AggregationFunction.SmoothMaximum, 3, 3, True, False),
-    ('gripper', AggregationFunction.Mean, 4, 4, True, True),
-    ('gripper', AggregationFunction.Add, 5, 5, True, True),
+    ('blocks', HardMaximumAggregation(), 2, 2, False, False),
+    ('blocks', SmoothMaximumAggregation(), 3, 3, False, False),
+    ('blocks', MeanAggregation(), 4, 4, False, True),
+    ('blocks', SumAggregation(), 5, 5, True, False),
+    ('gripper', HardMaximumAggregation(), 2, 2, True, False),
+    ('gripper', SmoothMaximumAggregation(), 3, 3, True, False),
+    ('gripper', MeanAggregation(), 4, 4, True, True),
+    ('gripper', SumAggregation(), 5, 5, True, True),
 ])
 def test_forward_model(dom: str, agg: AggregationFunction, layers: int, size: int, gro: bool, norm: bool):
     domain_path = DATA_DIR / dom / 'domain.pddl'
@@ -53,7 +52,6 @@ def test_forward_model(dom: str, agg: AggregationFunction, layers: int, size: in
     problem = mm.Problem(domain, problem_path)
     config = HyperparameterConfig(
         domain=domain,
-        message_aggregation=agg,
         num_layers=layers,
         embedding_size=size,
         global_readout=gro,
@@ -61,7 +59,7 @@ def test_forward_model(dom: str, agg: AggregationFunction, layers: int, size: in
     )
     input_spec=(StateEncoder(), GroundActionsEncoder(), GoalEncoder())
     output_spec=[('q_values', ActionScalarDecoder(config))]
-    model = RelationalGraphNeuralNetwork(config, input_spec, output_spec)
+    model = RelationalGraphNeuralNetwork(config, input_spec, output_spec, agg, PredicateMLPMessages(config, input_spec), MLPUpdates(config))  # type: ignore
     initial_state = problem.get_initial_state()
     initial_actions = initial_state.generate_applicable_actions()
     original_goal = problem.get_goal_condition()
@@ -85,7 +83,7 @@ def test_forward_hook(domain_name: str):
     )
     input_spec=(StateEncoder(), GoalEncoder())
     output_spec=[('value', ObjectsScalarDecoder(config))]
-    model = RelationalGraphNeuralNetwork(config, input_spec, output_spec)
+    model = RelationalGraphNeuralNetwork(config, input_spec, output_spec, SmoothMaximumAggregation(), PredicateMLPMessages(config, input_spec), MLPUpdates(config))  # type: ignore
     initial_state = problem.get_initial_state()
     original_goal = problem.get_goal_condition()
     input = [(initial_state, original_goal)]
@@ -117,7 +115,7 @@ def test_forward_identical_batch(domain_name: str):
     )
     input_spec=(StateEncoder(), GoalEncoder())
     output_spec=[('value', ObjectsScalarDecoder(config))]
-    model = RelationalGraphNeuralNetwork(config, input_spec, output_spec)
+    model = RelationalGraphNeuralNetwork(config, input_spec, output_spec, MeanAggregation(), PredicateMLPMessages(config, input_spec), MLPUpdates(config))  # type: ignore
     initial_state = problem.get_initial_state()
     original_goal = problem.get_goal_condition()
     batch_size = 4
@@ -141,7 +139,7 @@ def test_forward_different_batch(domain_name: str):
     )
     input_spec=(StateEncoder(), GoalEncoder())
     output_spec=[('value', ObjectsScalarDecoder(config))]
-    model = RelationalGraphNeuralNetwork(config, input_spec, output_spec)
+    model = RelationalGraphNeuralNetwork(config, input_spec, output_spec, SumAggregation(), PredicateMLPMessages(config, input_spec), MLPUpdates(config))  # type: ignore
     initial_state = problem.get_initial_state()
     original_goal = problem.get_goal_condition()
     different_goals = [mm.GroundConjunctiveCondition.new([literal], problem) for literal in original_goal]
@@ -158,7 +156,6 @@ def test_save_and_load():
     # Create a model.
     config_1 = HyperparameterConfig(
         domain=domain,
-        message_aggregation=AggregationFunction.Mean,
         num_layers=2,
         embedding_size=4,
         global_readout=True,
@@ -166,7 +163,7 @@ def test_save_and_load():
     )
     input_spec=(StateEncoder(), GroundActionsEncoder(), GoalEncoder())
     output_spec=[('q_values', ActionScalarDecoder(config_1))]
-    model_1 = RelationalGraphNeuralNetwork(config_1, input_spec, output_spec)
+    model_1 = RelationalGraphNeuralNetwork(config_1, input_spec, output_spec, MeanAggregation(), PredicateMLPMessages(config_1, input_spec), MLPUpdates(config_1))  # type: ignore
     # Save the model with some extras.
     extras_1 = {'foo': 42, 'bar': 'baz'}
     model_1.save('test.pt', extras_1)
@@ -177,7 +174,6 @@ def test_save_and_load():
     # Note: We can't directly compare configs because encoder objects have different identities after serialization
     assert model_1._config.embedding_size == model_2._config.embedding_size
     assert model_1._config.num_layers == model_2._config.num_layers
-    assert model_1._config.message_aggregation == model_2._config.message_aggregation
     assert extras_1 == extras_2
 
 
@@ -193,14 +189,13 @@ def test_simple_forward(domain_name: str):
     embedding_size = 4
     config = HyperparameterConfig(
         domain=domain,
-        message_aggregation=AggregationFunction.HardMaximum,
         num_layers=2,
         embedding_size=embedding_size,
     )
     input_spec=(StateEncoder(), GroundActionsEncoder(), GoalEncoder())
     output_spec=[('q_values', ActionScalarDecoder(config)), ('state_value', ObjectsScalarDecoder(config))]
 
-    model = RelationalGraphNeuralNetwork(config, input_spec, output_spec)
+    model = RelationalGraphNeuralNetwork(config, input_spec, output_spec, HardMaximumAggregation(), PredicateMLPMessages(config, input_spec), MLPUpdates(config))  # type: ignore
 
     # Test forward pass
     initial_state = problem.get_initial_state()
@@ -237,7 +232,7 @@ def test_decoder_constructors():
     )
     input_spec_1=(StateEncoder(), GroundActionsEncoder())
     output_spec_1=[('q_values', ActionScalarDecoder(config_1))]
-    model_1 = RelationalGraphNeuralNetwork(config_1, input_spec_1, output_spec_1)
+    model_1 = RelationalGraphNeuralNetwork(config_1, input_spec_1, output_spec_1, MeanAggregation(), PredicateMLPMessages(config_1, input_spec_1), MLPUpdates(config_1))  # type: ignore
 
     # Test ObjectsScalarDecoder
     config_2 = HyperparameterConfig(
@@ -247,17 +242,17 @@ def test_decoder_constructors():
     )
     input_spec_2=(StateEncoder(), GoalEncoder())
     output_spec_2=[('object_values', ObjectsScalarDecoder(config_2))]
-    model_2 = RelationalGraphNeuralNetwork(config_2, input_spec_2, output_spec_2)
+    model_2 = RelationalGraphNeuralNetwork(config_2, input_spec_2, output_spec_2, MeanAggregation(), PredicateMLPMessages(config_2, input_spec_2), MLPUpdates(config_2))  # type: ignore
 
     # Test ActionEmbeddingDecoder
-    config3 = HyperparameterConfig(
+    config_3 = HyperparameterConfig(
         domain=domain,
         embedding_size=embedding_size,
         num_layers=2
     )
     input_spec_3=(StateEncoder(), GroundActionsEncoder())
     output_spec_3=[('action_embeddings', ActionEmbeddingDecoder())]
-    model_3 = RelationalGraphNeuralNetwork(config3, input_spec_3, output_spec_3)
+    model_3 = RelationalGraphNeuralNetwork(config_3, input_spec_3, output_spec_3, MeanAggregation(), PredicateMLPMessages(config_3, input_spec_3), MLPUpdates(config_3))  # type: ignore
 
     # Test ObjectsEmbeddingDecoder
     config_4 = HyperparameterConfig(
@@ -267,4 +262,4 @@ def test_decoder_constructors():
     )
     input_spec_4=(StateEncoder(), GoalEncoder())
     output_spec_4=[('object_embeddings', ObjectsEmbeddingDecoder())]
-    model_4 = RelationalGraphNeuralNetwork(config_4, input_spec_4, output_spec_4)
+    model_4 = RelationalGraphNeuralNetwork(config_4, input_spec_4, output_spec_4, MeanAggregation(), PredicateMLPMessages(config_4, input_spec_4), MLPUpdates(config_4))  # type: ignore

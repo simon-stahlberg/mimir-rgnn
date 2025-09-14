@@ -167,7 +167,7 @@ class TransitionEffectsEncoder(Encoder):
         return num_transitions
 
 
-def get_encoding_from_encoders(domain: mm.Domain, input_specification: tuple[Encoder, ...]) -> list[tuple[str, int]]:
+def get_relations_from_encoders(domain: mm.Domain, input_specification: tuple[Encoder, ...]) -> list[tuple[str, int]]:
     """Get relations from encoder-based input specifications."""
     relations: list[tuple[str, int]] = []
     for encoder in input_specification:
@@ -176,7 +176,7 @@ def get_encoding_from_encoders(domain: mm.Domain, input_specification: tuple[Enc
     return relations
 
 
-def encode_input_from_encoders(input: list[tuple], input_specification: tuple[Encoder, ...], device: torch.device) -> EncodedTensors:
+def get_input_from_encoders(input: list[tuple], input_specification: tuple[Encoder, ...], device: torch.device) -> EncodedTensors:
     """Encode input using encoder-based specifications."""
     intermediate = EncodedLists()
 

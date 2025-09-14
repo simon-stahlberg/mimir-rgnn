@@ -70,3 +70,67 @@ class Decoder(ABC, torch.nn.Module):
             The decoded output (tensors, lists of tensors, etc.)
         """
         pass
+
+
+class AggregationFunction(ABC, torch.nn.Module):
+    """Base class for aggregation functions used in graph neural networks."""
+
+    def __init__(self):
+        super().__init__()
+
+    @abstractmethod
+    def forward(self, node_embeddings: torch.Tensor, messages: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
+        """
+        Aggregate messages based on the provided indices.
+
+        Args:
+            node_embeddings: The current node embeddings
+            messages: The messages to aggregate
+            indices: The indices indicating how to group messages for aggregation
+
+        Returns:
+            The aggregated messages
+        """
+        pass
+
+
+class MessageFunction(ABC, torch.nn.Module):
+    """Base class for message functions used in graph neural networks."""
+
+    def __init__(self):
+        super().__init__()
+
+    @abstractmethod
+    def forward(self, relation_name: str, argument_embeddings: torch.Tensor) -> torch.Tensor:
+        """
+        Compute messages for a given relation and its argument embeddings.
+
+        Args:
+            relation_name: The name of the relation for which to compute messages
+            argument_embeddings: The embeddings of the arguments involved in the relation
+
+        Returns:
+            The computed messages
+        """
+        pass
+
+
+class UpdateFunction(ABC, torch.nn.Module):
+    """Base class for update functions used in graph neural networks."""
+
+    def __init__(self):
+        super().__init__()
+
+    @abstractmethod
+    def forward(self, node_embeddings: torch.Tensor, aggregated_messages: torch.Tensor) -> torch.Tensor:
+        """
+        Update node embeddings based on the aggregated messages.
+
+        Args:
+            node_embeddings: The current node embeddings
+            aggregated_messages: The aggregated messages to use for the update
+
+        Returns:
+            The updated node embeddings
+        """
+        pass
