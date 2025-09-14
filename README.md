@@ -48,7 +48,7 @@ hparam_config = rgnn.HyperparameterConfig(
 )
 
 # Define input and output specifications using encoder/decoder classes
-input_spec = (rgnn.StateEncoder(), rgnn.GoalEncoder())
+input_spec = (rgnn.StateEncoder(), rgnn.GroundActionsEncoder(), rgnn.GoalEncoder())
 output_spec = [('q_values', rgnn.ActionScalarDecoder(hparam_config))]
 
 # Configure the R-GNN modules (aggregation, message, and update functions)
@@ -64,9 +64,10 @@ model = rgnn.RelationalGraphNeuralNetwork(hparam_config, module_config, input_sp
 # Use the model for inference
 # problem = mm.Problem(domain, 'path/to/problem.pddl')
 # state = problem.get_initial_state()
+# actions = state.generate_applicable_actions()
 # goal = problem.get_goal_condition()
 #
-# inputs = [(state, goal)]  # Input tuple matching input_spec order
+# inputs = [(state, actions, goal)]  # Input tuple matching input_spec order
 # outputs = model(inputs)
 # q_values = outputs.readout('q_values')
 ```
@@ -113,7 +114,7 @@ Inherit from `Encoder` base class to define custom input processing:
 Inherit from `Decoder` base class to define custom output readout:
 
 ```python
-input_spec = (StateEncoder(), GoalEncoder(), GroundActionsEncoder())
+input_spec = (StateEncoder(), GroundActionsEncoder(), GoalEncoder())
 output_spec = [
     ('actor', ActionScalarDecoder(hparam_config)),
     ('critic', ObjectsScalarDecoder(hparam_config)), 
