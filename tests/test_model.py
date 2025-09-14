@@ -1,5 +1,6 @@
 import pymimir as mm
 import pytest
+import torch
 
 from pathlib import Path
 from pymimir_rgnn import *
@@ -318,3 +319,46 @@ def test_decoder_constructors():
         update_function=MLPUpdates(hparam_config_4)
     )
     model_4 = RelationalGraphNeuralNetwork(hparam_config_4, module_config_4, input_spec_4, output_spec_4)  # type: ignore
+
+
+@pytest.mark.parametrize("domain_name", [('blocks'), ('gripper')])
+def test_attention_messages(domain_name: str):
+    """Test that AttentionMessages class does not crash and produces reasonable output."""
+    domain_path = DATA_DIR / domain_name / 'domain.pddl'
+    problem_path = DATA_DIR / domain_name / 'problem.pddl'
+    domain = mm.Domain(domain_path)
+    problem = mm.Problem(domain, problem_path)
+    
+    hparam_config = HyperparameterConfig(
+        domain=domain,
+        num_layers=2,
+        embedding_size=8,
+    )
+    input_spec = (StateEncoder(), GroundActionsEncoder(), GoalEncoder())
+    output_spec = [('q_values', ActionScalarDecoder(hparam_config))]
+    
+    # Create model with AttentionMessages
+    module_config = ModuleConfig(
+        aggregation_function=MeanAggregation(),
+        message_function=AttentionMessages(hparam_config, input_spec),
+        update_function=MLPUpdates(hparam_config)
+    )
+    model = RelationalGraphNeuralNetwork(hparam_config, module_config, input_spec, output_spec)  # type: ignore
+    
+    # Test forward pass
+    initial_state = problem.get_initial_state()
+    goal_condition = problem.get_goal_condition()
+    ground_actions = initial_state.generate_applicable_actions()
+    
+    input_data = [(initial_state, ground_actions, goal_condition)]
+    result = model.forward(input_data)
+    
+    # Verify output
+    q_values = result.readout('q_values')
+    assert isinstance(q_values, list)
+    assert len(q_values) == 1  # One instance in batch
+    assert len(q_values[0]) == len(ground_actions)
+    
+    # Check that we get valid tensors
+    assert all(isinstance(val, torch.Tensor) for val in q_values[0])
+    assert all(val.numel() == 1 for val in q_values[0])  # Each should be a scalar
