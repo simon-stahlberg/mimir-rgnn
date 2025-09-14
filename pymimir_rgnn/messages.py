@@ -139,7 +139,6 @@ class AttentionMessages(MessageFunction):
         # Pre-compute indices for extracting messages after transformer
         message_indices = []
         output_indices = []
-        bar = []
 
         # Track offsets for each relation to map back later
         relation_offsets = {}
