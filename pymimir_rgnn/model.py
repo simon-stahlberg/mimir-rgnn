@@ -109,41 +109,6 @@ class RelationalLayersModule(nn.Module):
         return node_embeddings
 
 
-class ObjectScalarReadout(nn.Module):
-    def __init__(self, config: HyperparameterConfig):
-        super().__init__()  # type: ignore
-        self._object_readout = SumReadout(config.embedding_size, 1)
-
-    def forward(self, node_embeddings: torch.Tensor, input: EncodedTensors):
-        object_embeddings = node_embeddings.index_select(0, input.object_indices)
-        return self._object_readout(object_embeddings, input.object_sizes).view(-1)
-
-
-class ObjectEmbeddingReadout(nn.Module):
-    def forward(self, node_embeddings: torch.Tensor, input: EncodedTensors):
-        return node_embeddings.index_select(0, input.object_indices)
-
-
-class ActionScalarReadout(nn.Module):
-    def __init__(self, config: HyperparameterConfig):
-        super().__init__()  # type: ignore
-        self._object_readout = SumReadout(config.embedding_size, config.embedding_size)
-        self._action_value = MLP(2 * config.embedding_size, 1)
-
-    def forward(self, node_embeddings: torch.Tensor, input: EncodedTensors) -> list[torch.Tensor]:
-        action_embeddings = node_embeddings.index_select(0, input.action_indices)
-        object_embeddings = node_embeddings.index_select(0, input.object_indices)
-        object_aggregation: torch.Tensor = self._object_readout(object_embeddings, input.object_sizes)
-        object_aggregation = object_aggregation.repeat_interleave(input.action_sizes, dim=0)
-        values: torch.Tensor = self._action_value(torch.cat((action_embeddings, object_aggregation), dim=1))
-        return [action_values.view(-1) for action_values in values.split(input.action_sizes.tolist())]  # type: ignore
-
-
-class ActionEmbeddingReadout(nn.Module):
-    def forward(self, node_embeddings: torch.Tensor, input: EncodedTensors):
-        return node_embeddings.index_select(0, input.action_indices)
-
-
 class RelationalGraphNeuralNetwork(nn.Module):
     def __init__(self,
                  config: HyperparameterConfig,

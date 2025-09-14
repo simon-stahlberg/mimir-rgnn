@@ -43,13 +43,18 @@ def relations_to_tensors(term_id_groups: dict[str, list[int]], device: torch.dev
     return result
 
 
-def gumbel_sigmoid(logits, tau=1.0, hard=False, eps=1e-10):
+def gumbel_sigmoid(logits, tau=1.0, hard=False, eps=1e-10) -> torch.Tensor:
     """
     Binary Concrete / Gumbel-Sigmoid with double noise trick.
+
     Args:
         logits: Tensor of pre-sigmoid values.
         tau: Temperature (lower -> harder samples).
         hard: If True, returns hard {0,1} but with straight-through gradients.
+        eps: Small constant for numerical stability.
+
+    Returns:
+        Sampled tensor of same shape as logits.
     """
     # Sample two Gumbel noises
     u1 = torch.rand_like(logits)
