@@ -56,13 +56,14 @@ from .decoders import ActionScalarDecoder, ActionEmbeddingDecoder, ObjectsScalar
 from .encoders import StateEncoder, GoalEncoder, GroundActionsEncoder, TransitionEffectsEncoder
 from .configs import HyperparameterConfig, ModuleConfig
 from .model import ForwardState, RelationalGraphNeuralNetwork
-from .messages import PredicateMLPMessages
+from .messages import PredicateMLPMessages, AttentionMessages
 from .updates import MLPUpdates
 
 __all__ = [
     "ActionEmbeddingDecoder",
     "ActionScalarDecoder",
     "AggregationFunction",
+    "AttentionMessages",
     "Decoder",
     "Encoder",
     "ForwardState",
