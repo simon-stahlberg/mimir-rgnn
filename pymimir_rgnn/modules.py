@@ -4,14 +4,14 @@ import torch.nn as nn
 
 class MLP(nn.Module):
     """Multi-layer perceptron with Mish activation function.
-    
+
     A simple two-layer neural network with Mish activation. This is used
     throughout the library as a basic building block for learnable transformations.
     """
-    
+
     def __init__(self, input_size: int, output_size: int):
         """Initialize the MLP.
-        
+
         Args:
             input_size: Size of the input features.
             output_size: Size of the output features.
@@ -24,10 +24,10 @@ class MLP(nn.Module):
 
     def forward(self, input: torch.Tensor):
         """Forward pass through the MLP.
-        
+
         Args:
             input: Input tensor of shape (..., input_size).
-            
+
         Returns:
             Output tensor of shape (..., output_size).
         """
@@ -36,15 +36,15 @@ class MLP(nn.Module):
 
 class SumReadout(nn.Module):
     """Readout module that aggregates embeddings by summing within groups.
-    
+
     This module is used to aggregate node embeddings within groups (e.g., all
     objects in a state, all actions in an instance) and then applies an MLP
     to produce output values.
     """
-    
+
     def __init__(self, input_size: int, output_size: int):
         """Initialize the sum readout module.
-        
+
         Args:
             input_size: Size of the input embeddings.
             output_size: Size of the output features.
@@ -54,11 +54,11 @@ class SumReadout(nn.Module):
 
     def forward(self, node_embeddings: torch.Tensor, node_sizes: torch.Tensor) -> torch.Tensor:
         """Aggregate embeddings by sum within groups and apply MLP.
-        
+
         Args:
             node_embeddings: Node embeddings to aggregate.
             node_sizes: Number of nodes in each group.
-            
+
         Returns:
             Aggregated and transformed embeddings, one per group.
         """

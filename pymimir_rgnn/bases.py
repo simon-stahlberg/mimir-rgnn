@@ -7,11 +7,11 @@ from typing import Any
 
 class EncodedLists:
     """Intermediate representation for storing graph encoding data as lists.
-    
+
     This class holds the graph structure and node information in list format
     before conversion to tensors for use in the graph neural network.
     """
-    
+
     def __init__(self):
         """Initialize empty encoded lists for graph representation."""
         self.flattened_relations: dict[str, list[int]] = {}
@@ -25,11 +25,11 @@ class EncodedLists:
 
 class EncodedTensors:
     """Tensor representation for graph encoding data.
-    
+
     This class holds the graph structure and node information as tensors
     ready for use in the graph neural network computations.
     """
-    
+
     def __init__(self):
         """Initialize empty encoded tensors for graph representation."""
         self.flattened_relations: dict[str, torch.Tensor] = {}
@@ -43,7 +43,7 @@ class EncodedTensors:
 
 class Encoder(ABC):
     """Base class for encoders that transform PDDL structures into graph neural network inputs.
-    
+
     Encoders are responsible for converting PDDL planning structures (states, goals, actions)
     into a relational graph representation suitable for graph neural networks.
     """
@@ -51,10 +51,10 @@ class Encoder(ABC):
     @abstractmethod
     def get_relations(self, domain: mm.Domain) -> list[tuple[str, int]]:
         """Get the relations this encoder contributes to the graph encoding.
-        
+
         Args:
             domain: The PDDL domain containing predicates and actions.
-            
+
         Returns:
             List of (relation_name, arity) pairs representing the relations
             this encoder will add to the graph structure.
@@ -78,7 +78,7 @@ class Encoder(ABC):
 
 class Decoder(ABC, torch.nn.Module):
     """Base class for decoders that implement readout logic from node embeddings.
-    
+
     Decoders extract meaningful outputs from the node embeddings produced by
     the graph neural network, such as action values or object embeddings.
     """
@@ -103,7 +103,7 @@ class Decoder(ABC, torch.nn.Module):
 
 class AggregationFunction(ABC, torch.nn.Module):
     """Base class for aggregation functions used in graph neural networks.
-    
+
     Aggregation functions combine messages from multiple sources during
     the message passing phase of graph neural network computation.
     """
@@ -129,7 +129,7 @@ class AggregationFunction(ABC, torch.nn.Module):
 
 class MessageFunction(ABC, torch.nn.Module):
     """Base class for message functions used in graph neural networks.
-    
+
     Message functions compute messages between nodes based on their relations
     during the message passing phase of graph neural network computation.
     """
@@ -154,7 +154,7 @@ class MessageFunction(ABC, torch.nn.Module):
 
 class UpdateFunction(ABC, torch.nn.Module):
     """Base class for update functions used in graph neural networks.
-    
+
     Update functions compute new node embeddings based on the current embeddings
     and the aggregated messages received during message passing.
     """

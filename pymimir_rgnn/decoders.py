@@ -8,7 +8,7 @@ from .modules import SumReadout, MLP
 
 class ActionScalarDecoder(Decoder):
     """Decoder for scalar values over actions.
-    
+
     This decoder produces a scalar value for each action by combining action
     embeddings with object embeddings. Commonly used for Q-values or action
     preferences in reinforcement learning applications.
@@ -16,7 +16,7 @@ class ActionScalarDecoder(Decoder):
 
     def __init__(self, config: 'HyperparameterConfig'):
         """Initialize the action scalar decoder.
-        
+
         Args:
             config: The hyperparameter configuration containing embedding sizes.
         """
@@ -26,13 +26,13 @@ class ActionScalarDecoder(Decoder):
 
     def forward(self, node_embeddings: torch.Tensor, encoding: 'EncodedTensors') -> list[torch.Tensor]:
         """Compute scalar values for each action.
-        
+
         Args:
             node_embeddings: The node embeddings from the graph neural network.
             encoding: The encoding information containing action and object indices.
-            
+
         Returns:
-            List of tensors, where each tensor contains scalar values for the 
+            List of tensors, where each tensor contains scalar values for the
             actions in the corresponding input instance.
         """
         action_embeddings = node_embeddings.index_select(0, encoding.action_indices)
@@ -45,7 +45,7 @@ class ActionScalarDecoder(Decoder):
 
 class ActionEmbeddingDecoder(Decoder):
     """Decoder for embeddings over actions.
-    
+
     This decoder extracts the learned embeddings for action nodes without
     any additional processing. Useful when you want to access the raw
     action representations learned by the graph neural network.
@@ -53,11 +53,11 @@ class ActionEmbeddingDecoder(Decoder):
 
     def forward(self, node_embeddings: torch.Tensor, encoding: 'EncodedTensors') -> torch.Tensor:
         """Extract action node embeddings.
-        
+
         Args:
             node_embeddings: The node embeddings from the graph neural network.
             encoding: The encoding information containing action indices.
-            
+
         Returns:
             Tensor containing the embeddings of all action nodes.
         """
@@ -66,7 +66,7 @@ class ActionEmbeddingDecoder(Decoder):
 
 class ObjectsScalarDecoder(Decoder):
     """Decoder for scalar values over objects.
-    
+
     This decoder produces a single scalar value by aggregating all object
     embeddings within each input instance. Commonly used for state value
     estimation or global state assessment.
@@ -74,7 +74,7 @@ class ObjectsScalarDecoder(Decoder):
 
     def __init__(self, config: 'HyperparameterConfig'):
         """Initialize the objects scalar decoder.
-        
+
         Args:
             config: The hyperparameter configuration containing embedding sizes.
         """
@@ -83,11 +83,11 @@ class ObjectsScalarDecoder(Decoder):
 
     def forward(self, node_embeddings: torch.Tensor, encoding: 'EncodedTensors') -> torch.Tensor:
         """Compute scalar values by aggregating object embeddings.
-        
+
         Args:
             node_embeddings: The node embeddings from the graph neural network.
             encoding: The encoding information containing object indices and sizes.
-            
+
         Returns:
             Tensor containing one scalar value per input instance.
         """
@@ -97,7 +97,7 @@ class ObjectsScalarDecoder(Decoder):
 
 class ObjectsEmbeddingDecoder(Decoder):
     """Decoder for embeddings over objects.
-    
+
     This decoder extracts the learned embeddings for object nodes without
     any additional processing. Useful when you want to access the raw
     object representations learned by the graph neural network.
@@ -105,11 +105,11 @@ class ObjectsEmbeddingDecoder(Decoder):
 
     def forward(self, node_embeddings: torch.Tensor, encoding: 'EncodedTensors') -> torch.Tensor:
         """Extract object node embeddings.
-        
+
         Args:
             node_embeddings: The node embeddings from the graph neural network.
             encoding: The encoding information containing object indices.
-            
+
         Returns:
             Tensor containing the embeddings of all object nodes.
         """

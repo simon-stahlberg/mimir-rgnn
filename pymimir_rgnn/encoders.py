@@ -9,7 +9,7 @@ from .bases import Encoder, EncodedLists, EncodedTensors
 
 class StateEncoder(Encoder):
     """Encoder for planning states.
-    
+
     This encoder transforms a planning state (which contains atoms/facts that are
     currently true) into nodes and relations for the graph neural network.
     Objects become nodes, and atoms become relations between objects.
@@ -17,10 +17,10 @@ class StateEncoder(Encoder):
 
     def get_relations(self, domain: mm.Domain) -> list[tuple[str, int]]:
         """Get relations that this encoder will add for state atoms.
-        
+
         Args:
             domain: The PDDL domain containing predicate definitions.
-            
+
         Returns:
             List of (relation_name, arity) pairs for all predicates except 'number'.
         """
@@ -30,15 +30,15 @@ class StateEncoder(Encoder):
 
     def encode(self, input_value: Any, encoding: 'EncodedLists', state: mm.State) -> int:
         """Encode a planning state into the intermediate representation.
-        
+
         Args:
             input_value: The state to encode (must be a mm.State).
             encoding: The encoding object to populate with graph structure.
             state: The current planning state (same as input_value).
-            
+
         Returns:
             Number of object nodes added to the graph.
-            
+
         Raises:
             AssertionError: If input_value is not a State.
         """
@@ -60,7 +60,7 @@ class StateEncoder(Encoder):
 
     def _add_atom_relation(self, atom: mm.GroundAtom, state: mm.State, is_goal_atom: bool, intermediate: 'EncodedLists'):
         """Add an atom relation to the intermediate representation.
-        
+
         Args:
             atom: The ground atom to add as a relation.
             state: The current planning state.
@@ -77,7 +77,7 @@ class StateEncoder(Encoder):
 
 class GoalEncoder(Encoder):
     """Encoder for goal conditions.
-    
+
     This encoder transforms a goal condition (conjunctive condition of literals
     that must be satisfied) into relations for the graph neural network.
     It creates both goal-specific relations and marks which atoms are true/false
@@ -86,10 +86,10 @@ class GoalEncoder(Encoder):
 
     def get_relations(self, domain: mm.Domain) -> list[tuple[str, int]]:
         """Get relations that this encoder will add for goal conditions.
-        
+
         Args:
             domain: The PDDL domain containing predicate definitions.
-            
+
         Returns:
             List of (relation_name, arity) pairs for goal predicates,
             including both true and false variants.
@@ -103,15 +103,15 @@ class GoalEncoder(Encoder):
 
     def encode(self, input_value: Any, encoding: 'EncodedLists', state: mm.State) -> int:
         """Encode a goal condition into the intermediate representation.
-        
+
         Args:
             input_value: The goal condition to encode (must be a GroundConjunctiveCondition).
             encoding: The encoding object to populate with graph structure.
             state: The current planning state for context.
-            
+
         Returns:
             Number of nodes added (0, as goals don't add new nodes).
-            
+
         Raises:
             AssertionError: If input_value is not a GroundConjunctiveCondition.
         """
@@ -126,7 +126,7 @@ class GoalEncoder(Encoder):
 
     def _add_atom_relation(self, atom: mm.GroundAtom, state: mm.State, is_goal_atom: bool, intermediate: 'EncodedLists'):
         """Add an atom relation to the intermediate representation.
-        
+
         Args:
             atom: The ground atom to add as a relation.
             state: The current planning state.
@@ -143,18 +143,18 @@ class GoalEncoder(Encoder):
 
 class GroundActionsEncoder(Encoder):
     """Encoder for ground actions.
-    
-    This encoder transforms a list of available ground actions into nodes and 
+
+    This encoder transforms a list of available ground actions into nodes and
     relations for the graph neural network. Each action becomes a new node,
     and relations connect actions to their parameter objects.
     """
 
     def get_relations(self, domain: mm.Domain) -> list[tuple[str, int]]:
         """Get relations that this encoder will add for actions.
-        
+
         Args:
             domain: The PDDL domain containing action definitions.
-            
+
         Returns:
             List of (relation_name, arity) pairs for all actions, where arity
             is the action's parameter count plus 1 (for the action node itself).
@@ -163,15 +163,15 @@ class GroundActionsEncoder(Encoder):
 
     def encode(self, input_value: Any, encoding: 'EncodedLists', state: mm.State) -> int:
         """Encode ground actions into the intermediate representation.
-        
+
         Args:
             input_value: List of ground actions to encode.
             encoding: The encoding object to populate with graph structure.
             state: The current planning state for context.
-            
+
         Returns:
             Number of action nodes added to the graph.
-            
+
         Raises:
             AssertionError: If input_value is not a list or contains non-GroundAction items.
         """
@@ -205,7 +205,7 @@ class GroundActionsEncoder(Encoder):
 
 class TransitionEffectsEncoder(Encoder):
     """Encoder for transition effects.
-    
+
     This encoder transforms action effects (lists of literals describing state
     changes) into nodes and relations for the graph neural network. Each
     transition becomes a new node, with relations connecting it to affected atoms.
@@ -213,10 +213,10 @@ class TransitionEffectsEncoder(Encoder):
 
     def get_relations(self, domain: mm.Domain) -> list[tuple[str, int]]:
         """Get relations that this encoder will add for transition effects.
-        
+
         Args:
             domain: The PDDL domain containing predicate definitions.
-            
+
         Returns:
             List of (relation_name, arity) pairs for effect relations,
             including positive/negative effects and goal-affecting variants.
@@ -233,15 +233,15 @@ class TransitionEffectsEncoder(Encoder):
 
     def encode(self, input_value: Any, encoding: 'EncodedLists', state: mm.State) -> int:
         """Encode transition effects into the intermediate representation.
-        
+
         Args:
             input_value: List of effect lists (each inner list contains GroundLiterals).
             encoding: The encoding object to populate with graph structure.
             state: The current planning state for context.
-            
+
         Returns:
             Number of transition nodes added to the graph.
-            
+
         Raises:
             AssertionError: If input format is incorrect.
         """
@@ -287,11 +287,11 @@ class TransitionEffectsEncoder(Encoder):
 
 def get_relations_from_encoders(domain: mm.Domain, input_specification: tuple[Encoder, ...]) -> list[tuple[str, int]]:
     """Get all relations from a collection of encoders.
-    
+
     Args:
         domain: The PDDL domain containing predicates and actions.
         input_specification: Tuple of encoder instances.
-        
+
     Returns:
         Sorted list of (relation_name, arity) pairs from all encoders.
     """
@@ -304,21 +304,21 @@ def get_relations_from_encoders(domain: mm.Domain, input_specification: tuple[En
 
 def get_input_from_encoders(input: list[tuple], input_specification: tuple[Encoder, ...], device: torch.device) -> EncodedTensors:
     """Encode input using a collection of encoders.
-    
+
     This function processes a batch of input instances using the provided
     encoder specification and returns the encoded graph representation
     ready for use in the graph neural network.
-    
+
     Args:
         input: List of input tuples, where each tuple contains the inputs
               corresponding to the encoder specification.
-        input_specification: Tuple of encoder instances that define how to 
+        input_specification: Tuple of encoder instances that define how to
                             process each element of the input tuples.
         device: The torch device to place the resulting tensors on.
-        
+
     Returns:
         EncodedTensors object containing the graph representation.
-        
+
     Raises:
         AssertionError: If input format doesn't match specification or if
                        no StateEncoder is found in the specification.

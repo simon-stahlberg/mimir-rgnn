@@ -6,15 +6,15 @@ from .modules import MLP
 
 class MLPUpdates:
     """Update function using a multi-layer perceptron for node embedding updates.
-    
+
     This update function uses an MLP to compute new node embeddings based on
     the concatenation of current embeddings and aggregated messages. It provides
     a learnable way to combine the node's current state with incoming information.
     """
-    
+
     def __init__(self, config: HyperparameterConfig):
         """Initialize the MLP update function.
-        
+
         Args:
             config: The hyperparameter configuration containing embedding sizes.
         """
@@ -23,11 +23,11 @@ class MLPUpdates:
 
     def forward(self, node_embeddings: torch.Tensor, aggregated_messages: torch.Tensor) -> torch.Tensor:
         """Update node embeddings using the MLP.
-        
+
         Args:
             node_embeddings: The current node embeddings.
             aggregated_messages: The aggregated messages to incorporate.
-            
+
         Returns:
             Updated node embeddings with the same shape as the input embeddings.
         """

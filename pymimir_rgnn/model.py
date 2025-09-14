@@ -16,15 +16,15 @@ from .utils import gumbel_sigmoid
 
 class ForwardState:
     """Container for forward pass state and readout functions.
-    
+
     This class encapsulates the state of a forward pass through the R-GNN,
     including the current layer index and cached readout functions for
     extracting outputs at any layer.
     """
-    
+
     def __init__(self, layer_index: int, readouts: dict[str, Callable[[], Any]]):
         """Initialize the forward state.
-        
+
         Args:
             layer_index: The current layer index in the forward pass.
             readouts: Dictionary of named readout functions for extracting outputs.
@@ -34,7 +34,7 @@ class ForwardState:
 
     def get_layer_index(self) -> int:
         """Get the current layer index.
-        
+
         Returns:
             The current layer index in the forward pass.
         """
@@ -42,10 +42,10 @@ class ForwardState:
 
     def readout(self, name: str) -> Any:
         """Extract output using a named readout function.
-        
+
         Args:
             name: The name of the readout function to use.
-            
+
         Returns:
             The output from the specified readout function.
         """
@@ -53,17 +53,17 @@ class ForwardState:
 
 class RelationalMessagePassingModule(nn.Module):
     """Message passing module for relational graph neural networks.
-    
+
     This module implements the core message passing operations for R-GNNs,
     including message computation, aggregation, and node updates.
     """
-    
+
     def __init__(self, hparam_config: HyperparameterConfig, module_config: ModuleConfig):
         """Initialize the message passing module.
-        
+
         Args:
             hparam_config: The hyperparameter configuration.
-            module_config: The module configuration specifying aggregation, 
+            module_config: The module configuration specifying aggregation,
                          message, and update functions.
         """
         super().__init__()  # type: ignore
@@ -75,11 +75,11 @@ class RelationalMessagePassingModule(nn.Module):
 
     def _compute_messages_and_indices(self, node_embeddings: torch.Tensor, relations: dict[str, torch.Tensor]):
         """Compute messages and indices for all relations.
-        
+
         Args:
             node_embeddings: The current node embeddings.
             relations: Dictionary mapping relation names to their argument indices.
-            
+
         Returns:
             Tuple of (messages, indices) for aggregation.
         """
@@ -98,11 +98,11 @@ class RelationalMessagePassingModule(nn.Module):
 
     def forward(self, node_embeddings: torch.Tensor, relations: dict[str, torch.Tensor]) -> torch.Tensor:
         """Perform one step of message passing.
-        
+
         Args:
             node_embeddings: The current node embeddings.
             relations: Dictionary mapping relation names to their argument indices.
-            
+
         Returns:
             Updated node embeddings after message passing.
         """
@@ -113,14 +113,14 @@ class RelationalMessagePassingModule(nn.Module):
 
 class RelationalLayersModule(nn.Module):
     """Module that implements multiple layers of relational message passing.
-    
+
     This module orchestrates the execution of multiple message passing layers,
     handling global readout, normalization, and other layer-level operations.
     """
-    
+
     def __init__(self, hparam_config: HyperparameterConfig, module_config: ModuleConfig):
         """Initialize the relational layers module.
-        
+
         Args:
             hparam_config: The hyperparameter configuration.
             module_config: The module configuration.
@@ -137,7 +137,7 @@ class RelationalLayersModule(nn.Module):
 
     def _notify_hooks(self, iteration: int, embeddings: torch.Tensor) -> None:
         """Notify all registered hooks of the current layer state.
-        
+
         Args:
             iteration: The current layer iteration.
             embeddings: The current node embeddings.
@@ -147,7 +147,7 @@ class RelationalLayersModule(nn.Module):
 
     def add_hook(self, hook_func: Callable[[int, torch.Tensor], None]) -> None:
         """Add a hook function to be called at each layer.
-        
+
         Args:
             hook_func: Function to call with (iteration, embeddings) at each layer.
         """
@@ -159,10 +159,10 @@ class RelationalLayersModule(nn.Module):
 
     def forward(self, input: EncodedTensors) -> torch.Tensor:
         """Run multiple layers of message passing.
-        
+
         Args:
             input: The encoded graph input containing relations and node information.
-            
+
         Returns:
             Final node embeddings after all message passing layers.
         """
@@ -189,19 +189,9 @@ class RelationalLayersModule(nn.Module):
 
 class RelationalGraphNeuralNetwork(nn.Module):
     """Relational Graph Neural Network (R-GNN) for planning problems.
-    
-    This is the main class that implements a Relational Graph Neural Network
-    specifically designed for AI planning applications. It processes PDDL
-    planning structures and produces outputs through configurable encoder/decoder
-    pairs.
-    
-    The model supports:
-    - Flexible input specifications through encoder classes
-    - Multiple named outputs through decoder classes  
-    - Various aggregation, message, and update functions
-    - GPU acceleration via PyTorch
-    - Batched processing of multiple planning instances
-    
+
+    This is the main class that implements a Relational Graph Neural Network.
+
     Example:
         >>> domain = mm.Domain('path/to/domain.pddl')
         >>> hparam_config = HyperparameterConfig(domain=domain, embedding_size=64)
@@ -225,17 +215,17 @@ class RelationalGraphNeuralNetwork(nn.Module):
 
         Args:
             hparam_config: The hyperparameter configuration of the R-GNN.
-            module_config: The module configuration containing aggregation, message, 
-                         and update functions.
-            input_spec: The encoders that define how to transform PDDL structures 
-                      into graph neural network inputs. For example, 
-                      (StateEncoder(), GoalEncoder(), GroundActionsEncoder()) indicates 
-                      that each instance must be a tuple containing a state, followed 
-                      by a goal, followed by actions.
-            output_spec: The named outputs of the forward pass using decoder objects. 
-                       For example, [("q_values", ActionScalarDecoder(config)), 
-                       ("state_value", ObjectsScalarDecoder(config))] defines two outputs 
-                       with different readout functions.
+            module_config: The module configuration containing aggregation, message,
+                           and update functions.
+            input_spec: The encoders that define how to transform PDDL structures
+                        into graph neural network inputs. For example,
+                        (StateEncoder(), GoalEncoder(), GroundActionsEncoder()) indicates
+                        that each instance must be a tuple containing a state, followed
+                        by a goal, followed by actions.
+            output_spec: The named outputs of the forward pass using decoder objects.
+                         For example, [("q_values", ActionScalarDecoder(config)),
+                         ("state_value", ObjectsScalarDecoder(config))] defines two outputs
+                         with different readout functions.
         """
         super().__init__()
         self._hparam_config = hparam_config
@@ -253,7 +243,7 @@ class RelationalGraphNeuralNetwork(nn.Module):
 
     def _notify_hooks(self, forward_state: ForwardState) -> None:
         """Notify all registered hooks of the current forward state.
-        
+
         Args:
             forward_state: The current forward state containing layer info and readouts.
         """
@@ -262,7 +252,7 @@ class RelationalGraphNeuralNetwork(nn.Module):
 
     def get_hparam_config(self) -> HyperparameterConfig:
         """Get the hyperparameter configuration.
-        
+
         Returns:
             The hyperparameter configuration used by this model.
         """
@@ -270,7 +260,7 @@ class RelationalGraphNeuralNetwork(nn.Module):
 
     def get_module_config(self) -> ModuleConfig:
         """Get the module configuration.
-        
+
         Returns:
             The module configuration used by this model.
         """
@@ -278,7 +268,7 @@ class RelationalGraphNeuralNetwork(nn.Module):
 
     def add_hook(self, hook_func: Callable[[ForwardState], None]) -> None:
         """Add a hook function to be called during forward passes.
-        
+
         Args:
             hook_func: Function to call with ForwardState at each layer.
         """
@@ -290,19 +280,19 @@ class RelationalGraphNeuralNetwork(nn.Module):
 
     def get_device(self):
         """Get the device this model is on.
-        
+
         Returns:
-            The torch device (CPU or CUDA) where this model is located.
+            The torch device where this model is located.
         """
         return self._dummy.device
 
     def forward(self, x: list[tuple]) -> ForwardState:  # type: ignore
         """Perform a forward pass through the R-GNN.
-        
+
         Args:
             x: List of input tuples, where each tuple contains the inputs specified
                by the input_spec (e.g., state, goal, actions).
-               
+
         Returns:
             ForwardState object containing the final layer index and readout functions
             for extracting outputs.
@@ -332,7 +322,7 @@ class RelationalGraphNeuralNetwork(nn.Module):
         """Create a deep copy of the model with identical weights and configuration.
 
         Returns:
-            A new RelationalGraphNeuralNetwork instance with the same weights 
+            A new RelationalGraphNeuralNetwork instance with the same weights
             and hyperparameters as this model.
         """
         model_clone = RelationalGraphNeuralNetwork(self._hparam_config,
@@ -344,7 +334,7 @@ class RelationalGraphNeuralNetwork(nn.Module):
 
     def copy_to(self, destination_model: 'RelationalGraphNeuralNetwork') -> None:
         """Copy this model's weights to another RelationalGraphNeuralNetwork instance.
-        
+
         Args:
             destination_model: The model to copy the weights to.
         """
@@ -355,7 +345,7 @@ class RelationalGraphNeuralNetwork(nn.Module):
 
         Args:
             path: The path to save the model checkpoint.
-            extras: Additional information to store in the checkpoint, e.g., 
+            extras: Additional information to store in the checkpoint, e.g.,
                   the optimizer state.
         """
         module_dict = { f.name: getattr(self._module_config, f.name) for f in fields(self._module_config) }
@@ -381,7 +371,7 @@ class RelationalGraphNeuralNetwork(nn.Module):
             device: The device to load the model to (e.g., 'cpu' or 'cuda').
 
         Returns:
-            A tuple containing the loaded RelationalGraphNeuralNetwork model and 
+            A tuple containing the loaded RelationalGraphNeuralNetwork model and
             a dictionary with additional information (e.g., optimizer state).
         """
         # weights_only=False is needed due to unpickle errors.

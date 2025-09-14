@@ -5,24 +5,24 @@ from .bases import AggregationFunction
 
 class MeanAggregation(AggregationFunction):
     """Mean aggregation function for graph neural networks.
-    
+
     This aggregation function computes the mean of all messages sent to each node.
     It provides a stable and commonly-used way to combine information from multiple
     neighboring nodes in the graph.
     """
-    
+
     def __init__(self) -> None:
         """Initialize the mean aggregation function."""
         super().__init__()
 
     def forward(self, node_embeddings: torch.Tensor, messages: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
         """Aggregate messages using mean operation.
-        
+
         Args:
             node_embeddings: The current node embeddings.
             messages: The messages to aggregate.
             indices: Indices indicating which messages belong to which nodes.
-            
+
         Returns:
             Aggregated messages with the same shape as node_embeddings.
         """
@@ -36,24 +36,24 @@ class MeanAggregation(AggregationFunction):
 
 class SumAggregation(AggregationFunction):
     """Sum aggregation function for graph neural networks.
-    
+
     This aggregation function computes the sum of all messages sent to each node.
     It preserves the magnitude of information flow and is useful when you want
     to accumulate information from all neighbors.
     """
-    
+
     def __init__(self) -> None:
         """Initialize the sum aggregation function."""
         super().__init__()
 
     def forward(self, node_embeddings: torch.Tensor, messages: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
         """Aggregate messages using sum operation.
-        
+
         Args:
             node_embeddings: The current node embeddings.
             messages: The messages to aggregate.
             indices: Indices indicating which messages belong to which nodes.
-            
+
         Returns:
             Aggregated messages with the same shape as node_embeddings.
         """
@@ -64,24 +64,24 @@ class SumAggregation(AggregationFunction):
 
 class HardMaximumAggregation(AggregationFunction):
     """Hard maximum aggregation function for graph neural networks.
-    
+
     This aggregation function selects the maximum value from all messages sent
     to each node. It emphasizes the strongest signals and can be useful for
     attention-like mechanisms or when only the most important information matters.
     """
-    
+
     def __init__(self) -> None:
         """Initialize the hard maximum aggregation function."""
         super().__init__()
 
     def forward(self, node_embeddings: torch.Tensor, messages: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
         """Aggregate messages using hard maximum operation.
-        
+
         Args:
             node_embeddings: The current node embeddings.
             messages: The messages to aggregate.
             indices: Indices indicating which messages belong to which nodes.
-            
+
         Returns:
             Aggregated messages with the same shape as node_embeddings.
         """
@@ -92,25 +92,25 @@ class HardMaximumAggregation(AggregationFunction):
 
 class SmoothMaximumAggregation(AggregationFunction):
     """Smooth maximum aggregation function using LogSumExp for graph neural networks.
-    
+
     This aggregation function computes a smooth approximation to the maximum
-    using the LogSumExp (log-sum-exponential) operation. It provides a 
+    using the LogSumExp (log-sum-exponential) operation. It provides a
     differentiable alternative to hard maximum that emphasizes the largest
     values while still considering other inputs.
     """
-    
+
     def __init__(self) -> None:
         """Initialize the smooth maximum aggregation function."""
         super().__init__()
 
     def forward(self, node_embeddings: torch.Tensor, messages: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
         """Aggregate messages using smooth maximum (LogSumExp) operation.
-        
+
         Args:
             node_embeddings: The current node embeddings.
             messages: The messages to aggregate.
             indices: Indices indicating which messages belong to which nodes.
-            
+
         Returns:
             Aggregated messages with the same shape as node_embeddings.
         """
