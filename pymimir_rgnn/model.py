@@ -6,7 +6,7 @@ from dataclasses import fields
 from pathlib import Path
 from typing import Any, Callable, Union
 
-from .bases import Encoder
+from .bases import Encoder, MessageFunction
 from .configs import HyperparameterConfig, ModuleConfig
 from .decoders import Decoder
 from .encoders import EncodedTensors, get_input_from_encoders
@@ -51,7 +51,7 @@ class ForwardState:
         """
         return self._readouts[name]()
 
-class RelationalMessagePassingModule(nn.Module):
+class RelationalLayerModule(nn.Module):
     """Message passing module for relational graph neural networks.
 
     This module implements the core message passing operations for R-GNNs,
@@ -88,7 +88,7 @@ class RelationalMessagePassingModule(nn.Module):
         return self._update.forward(node_embeddings, aggregated_messages)
 
 
-class RelationalLayersModule(nn.Module):
+class RelationalLayerStackModule(nn.Module):
     """Module that implements multiple layers of relational message passing.
 
     This module orchestrates the execution of multiple message passing layers,
@@ -104,7 +104,8 @@ class RelationalLayersModule(nn.Module):
         """
         super().__init__()  # type: ignore
         self._config = hparam_config
-        self._relation_network = RelationalMessagePassingModule(hparam_config, module_config)
+        self._relation_network = RelationalLayerModule(hparam_config, module_config)
+        self._message = module_config.message_function
         if hparam_config.global_readout:
             self._global_readout = SumReadout(hparam_config.embedding_size, hparam_config.embedding_size)
             self._global_update = MLP(2 * hparam_config.embedding_size, hparam_config.embedding_size)
@@ -143,6 +144,7 @@ class RelationalLayersModule(nn.Module):
         Returns:
             Final node embeddings after all message passing layers.
         """
+        self._message.setup(input.flattened_relations)
         device = input.node_sizes.device
         node_embeddings: torch.Tensor = torch.zeros([int(input.node_sizes.sum()), self._config.embedding_size], dtype=torch.float, requires_grad=True, device=device)
         for iteration in range(self._config.num_layers):
@@ -161,6 +163,7 @@ class RelationalLayersModule(nn.Module):
                 next_node_embeddings = node_embeddings + next_node_embeddings
             node_embeddings = next_node_embeddings
             self._notify_hooks(iteration, node_embeddings)
+        self._message.cleanup()
         return node_embeddings
 
 
@@ -209,7 +212,7 @@ class RelationalGraphNeuralNetwork(nn.Module):
         self._module_config = module_config
         self._input_spec = input_spec
         self._output_spec = output_spec
-        self._mpnn_module = RelationalLayersModule(hparam_config, module_config)
+        self._mpnn_module = RelationalLayerStackModule(hparam_config, module_config)
         self._readouts = nn.ModuleDict()
         for output_name, decoder in output_spec:
             assert isinstance(output_name, str), 'The first part of the output specification must be a name.'

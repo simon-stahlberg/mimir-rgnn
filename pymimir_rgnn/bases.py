@@ -138,6 +138,14 @@ class MessageFunction(ABC, torch.nn.Module):
         """Initialize the message function as a PyTorch module."""
         super().__init__()
 
+    def setup(self, relations: dict[str, torch.Tensor]) -> None:
+        """Optional setup before message computation.
+
+        Args:
+            relations: Dictionary mapping relation names to their argument indices.
+        """
+        pass
+
     @abstractmethod
     def forward(self, node_embeddings: torch.Tensor, relations: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
         """Compute messages and indices for all relations.
@@ -149,6 +157,10 @@ class MessageFunction(ABC, torch.nn.Module):
         Returns:
             Tuple of (messages, indices) for aggregation.
         """
+        pass
+
+    def cleanup(self) -> None:
+        """Optional cleanup after message computation."""
         pass
 
 

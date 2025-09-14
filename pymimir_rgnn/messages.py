@@ -115,6 +115,22 @@ class AttentionMessages(MessageFunction):
         )
         self._transformer = nn.TransformerEncoder(encoder_layer, num_layers=2)
 
+    def setup(self, relations: dict[str, torch.Tensor]) -> None:
+        # TODO: This function is called before the first forward pass in the message passing phase.
+        # The actual message passing structure is always the same between all layers, so much of the code can be moved here.
+        # The forward pass requires a lot of setup before the actual computation.
+        # The only part that cannot be moved here is creating the object tokens from node embeddings since they can change between layers.
+        # The idea is as follows: create all static parts here (predicate embeddings, positional embeddings, padding masks, etc.)
+        # and store them inside of self._cache = {...}. Furthermore, create an index vector for selecting the node embeddings to efficiently create all object tokens.
+        # Then, in the forward pass, only create the object tokens from node embeddings and combine them with the static parts to create the full sequences.
+        # The corresponding `cleanup` function can be used to clear the cache after the message passing phase is done.
+        pass
+
+    def cleanup(self) -> None:
+        # TODO: This function is called after the last forward pass in the message passing phase.
+        # Clear any cached data created in the `setup` function to free up memory.
+        pass
+
     def forward(self, node_embeddings: torch.Tensor, relations: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
         """Compute messages using transformer attention for all relations in a single pass.
 
