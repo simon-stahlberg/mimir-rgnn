@@ -47,16 +47,16 @@ hparam_config = rgnn.HyperparameterConfig(
     num_layers=30,
 )
 
+# Define input and output specifications using encoder/decoder classes
+input_spec = (rgnn.StateEncoder(), rgnn.GoalEncoder())
+output_spec = [('q_values', rgnn.ActionScalarDecoder(hparam_config))]
+
 # Configure the R-GNN modules (aggregation, message, and update functions)
 module_config = rgnn.ModuleConfig(
     aggregation_function=rgnn.MeanAggregation(),
     message_function=rgnn.PredicateMLPMessages(hparam_config, input_spec),
     update_function=rgnn.MLPUpdates(hparam_config)
 )
-
-# Define input and output specifications using encoder/decoder classes
-input_spec = (rgnn.StateEncoder(), rgnn.GoalEncoder())
-output_spec = [('q_values', rgnn.ActionScalarDecoder(hparam_config))]
 
 # Create and initialize the model
 model = rgnn.RelationalGraphNeuralNetwork(hparam_config, module_config, input_spec, output_spec)

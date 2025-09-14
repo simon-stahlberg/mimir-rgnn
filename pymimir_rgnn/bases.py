@@ -6,7 +6,14 @@ from typing import Any
 
 
 class EncodedLists:
+    """Intermediate representation for storing graph encoding data as lists.
+    
+    This class holds the graph structure and node information in list format
+    before conversion to tensors for use in the graph neural network.
+    """
+    
     def __init__(self):
+        """Initialize empty encoded lists for graph representation."""
         self.flattened_relations: dict[str, list[int]] = {}
         self.node_count: int = 0
         self.node_sizes: list[int] = []
@@ -17,7 +24,14 @@ class EncodedLists:
 
 
 class EncodedTensors:
+    """Tensor representation for graph encoding data.
+    
+    This class holds the graph structure and node information as tensors
+    ready for use in the graph neural network computations.
+    """
+    
     def __init__(self):
+        """Initialize empty encoded tensors for graph representation."""
         self.flattened_relations: dict[str, torch.Tensor] = {}
         self.node_count: int = 0
         self.node_sizes: torch.Tensor = torch.LongTensor()
@@ -28,109 +42,136 @@ class EncodedTensors:
 
 
 class Encoder(ABC):
-    """Base class for encoders that transform PDDL structures into graph neural network inputs."""
+    """Base class for encoders that transform PDDL structures into graph neural network inputs.
+    
+    Encoders are responsible for converting PDDL planning structures (states, goals, actions)
+    into a relational graph representation suitable for graph neural networks.
+    """
 
     @abstractmethod
     def get_relations(self, domain: mm.Domain) -> list[tuple[str, int]]:
-        """Get the relations this encoder contributes to the graph encoding, expressed as a list of name-arity pairs."""
+        """Get the relations this encoder contributes to the graph encoding.
+        
+        Args:
+            domain: The PDDL domain containing predicates and actions.
+            
+        Returns:
+            List of (relation_name, arity) pairs representing the relations
+            this encoder will add to the graph structure.
+        """
         pass
 
     @abstractmethod
     def encode(self, input_value: Any, encoding: 'EncodedLists', state: mm.State) -> int:
-        """
-        Encode the input value into the representation.
+        """Encode the input value into the intermediate graph representation.
 
         Args:
-            input_value: The input data to encode (state, goal, actions, etc.)
-            encoding: The EncodedLists object to populate
-            state: The current planning state for context
+            input_value: The input data to encode (state, goal, actions, etc.).
+            encoding: The EncodedLists object to populate with graph structure.
+            state: The current planning state for context.
 
         Returns:
-            Number of nodes added to the graph
+            Number of nodes added to the graph by this encoder.
         """
         pass
 
 
 class Decoder(ABC, torch.nn.Module):
-    """Base class for decoders that implement readout logic from node embeddings."""
+    """Base class for decoders that implement readout logic from node embeddings.
+    
+    Decoders extract meaningful outputs from the node embeddings produced by
+    the graph neural network, such as action values or object embeddings.
+    """
 
     def __init__(self):
+        """Initialize the decoder as a PyTorch module."""
         super().__init__()
 
     @abstractmethod
     def forward(self, node_embeddings: torch.Tensor, encoding: 'EncodedTensors') -> Any:
-        """
-        Perform readout from node embeddings to produce output values.
+        """Perform readout from node embeddings to produce output values.
 
         Args:
-            node_embeddings: The node embeddings from the graph neural network
-            encoding: The encoding information on how to interpret the node embeddings
+            node_embeddings: The node embeddings from the graph neural network.
+            encoding: The encoding information on how to interpret the node embeddings.
 
         Returns:
-            The decoded output (tensors, lists of tensors, etc.)
+            The decoded output (tensors, lists of tensors, etc.).
         """
         pass
 
 
 class AggregationFunction(ABC, torch.nn.Module):
-    """Base class for aggregation functions used in graph neural networks."""
+    """Base class for aggregation functions used in graph neural networks.
+    
+    Aggregation functions combine messages from multiple sources during
+    the message passing phase of graph neural network computation.
+    """
 
     def __init__(self):
+        """Initialize the aggregation function as a PyTorch module."""
         super().__init__()
 
     @abstractmethod
     def forward(self, node_embeddings: torch.Tensor, messages: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
-        """
-        Aggregate messages based on the provided indices.
+        """Aggregate messages based on the provided indices.
 
         Args:
-            node_embeddings: The current node embeddings
-            messages: The messages to aggregate
-            indices: The indices indicating how to group messages for aggregation
+            node_embeddings: The current node embeddings.
+            messages: The messages to aggregate.
+            indices: The indices indicating how to group messages for aggregation.
 
         Returns:
-            The aggregated messages
+            The aggregated messages with the same shape as node_embeddings.
         """
         pass
 
 
 class MessageFunction(ABC, torch.nn.Module):
-    """Base class for message functions used in graph neural networks."""
+    """Base class for message functions used in graph neural networks.
+    
+    Message functions compute messages between nodes based on their relations
+    during the message passing phase of graph neural network computation.
+    """
 
     def __init__(self):
+        """Initialize the message function as a PyTorch module."""
         super().__init__()
 
     @abstractmethod
     def forward(self, relation_name: str, argument_embeddings: torch.Tensor) -> torch.Tensor:
-        """
-        Compute messages for a given relation and its argument embeddings.
+        """Compute messages for a given relation and its argument embeddings.
 
         Args:
-            relation_name: The name of the relation for which to compute messages
-            argument_embeddings: The embeddings of the arguments involved in the relation
+            relation_name: The name of the relation for which to compute messages.
+            argument_embeddings: The embeddings of the arguments involved in the relation.
 
         Returns:
-            The computed messages
+            The computed messages with the same shape as argument_embeddings.
         """
         pass
 
 
 class UpdateFunction(ABC, torch.nn.Module):
-    """Base class for update functions used in graph neural networks."""
+    """Base class for update functions used in graph neural networks.
+    
+    Update functions compute new node embeddings based on the current embeddings
+    and the aggregated messages received during message passing.
+    """
 
     def __init__(self):
+        """Initialize the update function as a PyTorch module."""
         super().__init__()
 
     @abstractmethod
     def forward(self, node_embeddings: torch.Tensor, aggregated_messages: torch.Tensor) -> torch.Tensor:
-        """
-        Update node embeddings based on the aggregated messages.
+        """Update node embeddings based on the aggregated messages.
 
         Args:
-            node_embeddings: The current node embeddings
-            aggregated_messages: The aggregated messages to use for the update
+            node_embeddings: The current node embeddings.
+            aggregated_messages: The aggregated messages to use for the update.
 
         Returns:
-            The updated node embeddings
+            The updated node embeddings with the same shape as the input embeddings.
         """
         pass
