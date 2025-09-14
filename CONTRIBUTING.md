@@ -106,6 +106,10 @@ class MyConfig:
         default=32,
         metadata={'doc': 'Size of node embeddings.'}
     )
+    
+    aggregation_function: AggregationFunction = field(
+        metadata={'doc': 'Function used to aggregate messages.'}
+    )
 ```
 
 ### Class-Based Encoder/Decoder System
@@ -145,9 +149,9 @@ class CustomDecoder(Decoder):
 
 ```python
 # Function with full type annotations
-def create_model(config: HyperparameterConfig, input_spec: tuple[Encoder, ...], output_spec: list[tuple[str, Decoder]]) -> RelationalGraphNeuralNetwork:
+def create_model(hparam_config: HyperparameterConfig, module_config: ModuleConfig, input_spec: tuple[Encoder, ...], output_spec: list[tuple[str, Decoder]]) -> RelationalGraphNeuralNetwork:
     """Create R-GNN model from configuration."""
-    return RelationalGraphNeuralNetwork(config, input_spec, output_spec)
+    return RelationalGraphNeuralNetwork(hparam_config, module_config, input_spec, output_spec)
 
 # Class with typed attributes  
 class EncodedTensors:
@@ -193,22 +197,26 @@ import pytest
 from pymimir_rgnn import *
 
 @pytest.mark.parametrize("domain,aggregation,layers,embedding_size", [
-    ('blocks', AggregationFunction.HardMaximum, 2, 32),
-    ('gripper', AggregationFunction.Mean, 4, 64),
+    ('blocks', MeanAggregation(), 2, 32),
+    ('gripper', SumAggregation(), 4, 64),
 ])
 def test_model_creation(domain: str, aggregation: AggregationFunction, 
                        layers: int, embedding_size: int):
     """Test R-GNN model creation with various configurations."""
     # Test implementation using encoder/decoder classes
-    config = HyperparameterConfig(
+    hparam_config = HyperparameterConfig(
         domain=load_domain(domain),
         embedding_size=embedding_size,
-        num_layers=layers,
-        message_aggregation=aggregation
+        num_layers=layers
     )
     input_spec = (StateEncoder(), GoalEncoder())
-    output_spec = [('q_values', ActionScalarDecoder(config))]
-    model = RelationalGraphNeuralNetwork(config, input_spec, output_spec)
+    output_spec = [('q_values', ActionScalarDecoder(hparam_config))]
+    module_config = ModuleConfig(
+        aggregation_function=aggregation,
+        message_function=PredicateMLPMessages(hparam_config, input_spec),
+        update_function=MLPUpdates(hparam_config)
+    )
+    model = RelationalGraphNeuralNetwork(hparam_config, module_config, input_spec, output_spec)
 ```
 
 ### Test Requirements

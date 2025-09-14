@@ -57,17 +57,22 @@ pip install -e .[dev]
    domain = mm.Domain(test_dir / 'blocks' / 'domain.pddl')
    problem = mm.Problem(domain, test_dir / 'blocks' / 'problem.pddl')
    
-   config = rgnn.HyperparameterConfig(
+   hparam_config = rgnn.HyperparameterConfig(
        domain=domain,
        embedding_size=32,
        num_layers=3,
-       message_aggregation=rgnn.AggregationFunction.Mean
    )
    
    input_spec = (rgnn.StateEncoder(), rgnn.GroundActionsEncoder(), rgnn.GoalEncoder())
-   output_spec = [('q_values', rgnn.ActionScalarDecoder(config))]
+   output_spec = [('q_values', rgnn.ActionScalarDecoder(hparam_config))]
    
-   model = rgnn.RelationalGraphNeuralNetwork(config, input_spec, output_spec)
+   module_config = rgnn.ModuleConfig(
+       aggregation_function=rgnn.MeanAggregation(),
+       message_function=rgnn.PredicateMLPMessages(hparam_config, input_spec),
+       update_function=rgnn.MLPUpdates(hparam_config)
+   )
+   
+   model = rgnn.RelationalGraphNeuralNetwork(hparam_config, module_config, input_spec, output_spec)
    initial_state = problem.get_initial_state()
    initial_actions = initial_state.generate_applicable_actions()
    goal = problem.get_goal_condition()
@@ -131,8 +136,13 @@ class HyperparameterConfig:
     domain: mm.Domain = field(metadata={'doc': 'The domain of the planning problem.'})
     embedding_size: int = field(default=32, metadata={'doc': 'Size of node embeddings.'})
     num_layers: int = field(default=3, metadata={'doc': 'Number of message passing layers.'})
-    message_aggregation: AggregationFunction = field(default=AggregationFunction.Mean, metadata={'doc': 'Message aggregation function.'})
     # ... other configuration fields
+
+@dataclass  
+class ModuleConfig:
+    aggregation_function: AggregationFunction = field(metadata={'doc': 'Message aggregation function.'})
+    message_function: MessageFunction = field(metadata={'doc': 'Message computation function.'})
+    update_function: UpdateFunction = field(metadata={'doc': 'Node update function.'})
 ```
 
 **Key Patterns**:
@@ -173,10 +183,10 @@ Standard PyTorch modules following library conventions:
 ### 4. Main R-GNN Model (model.py)
 
 **Aggregation Functions**:
-- `AggregationFunction.Add`: Sum aggregation
-- `AggregationFunction.Mean`: Mean aggregation  
-- `AggregationFunction.HardMaximum`: Hard maximum
-- `AggregationFunction.SmoothMaximum`: Smooth maximum (LogSumExp)
+- `MeanAggregation()`: Mean aggregation
+- `SumAggregation()`: Sum aggregation  
+- `HardMaximumAggregation()`: Hard maximum
+- `SmoothMaximumAggregation()`: Smooth maximum (LogSumExp)
 
 ### Main R-GNN Model
 The `RelationalGraphNeuralNetwork` class:
@@ -252,8 +262,8 @@ Use pytest parametrization for comprehensive testing:
 
 ```python
 @pytest.mark.parametrize("domain,aggregation,layers,embedding_size", [
-    ('blocks', AggregationFunction.HardMaximum, 2, 32),
-    ('gripper', AggregationFunction.Mean, 4, 64),
+    ('blocks', HardMaximumAggregation(), 2, 32),
+    ('gripper', MeanAggregation(), 4, 64),
 ])
 def test_model_configuration(domain: str, aggregation: AggregationFunction, 
                            layers: int, embedding_size: int):

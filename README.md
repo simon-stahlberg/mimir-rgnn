@@ -41,19 +41,25 @@ import pymimir_rgnn as rgnn
 domain = mm.Domain('path/to/domain.pddl')
 
 # Configure the R-GNN hyperparameters
-config = rgnn.HyperparameterConfig(
+hparam_config = rgnn.HyperparameterConfig(
     domain=domain,
     embedding_size=64,
     num_layers=30,
-    message_aggregation=rgnn.AggregationFunction.HardMaximum
+)
+
+# Configure the R-GNN modules (aggregation, message, and update functions)
+module_config = rgnn.ModuleConfig(
+    aggregation_function=rgnn.MeanAggregation(),
+    message_function=rgnn.PredicateMLPMessages(hparam_config, input_spec),
+    update_function=rgnn.MLPUpdates(hparam_config)
 )
 
 # Define input and output specifications using encoder/decoder classes
 input_spec = (rgnn.StateEncoder(), rgnn.GoalEncoder())
-output_spec = [('q_values', rgnn.ActionScalarDecoder(config))]
+output_spec = [('q_values', rgnn.ActionScalarDecoder(hparam_config))]
 
 # Create and initialize the model
-model = rgnn.RelationalGraphNeuralNetwork(config, input_spec, output_spec)
+model = rgnn.RelationalGraphNeuralNetwork(hparam_config, module_config, input_spec, output_spec)
 
 # Use the model for inference
 # problem = mm.Problem(domain, 'path/to/problem.pddl')
@@ -70,10 +76,16 @@ model = rgnn.RelationalGraphNeuralNetwork(config, input_spec, output_spec)
 ### Core Components
 
 #### `HyperparameterConfig`
-Central configuration class that defines model hyperparameters:
+Configuration class for R-GNN model hyperparameters:
 - **Domain**: The PDDL domain for the planning problem
-- **Model Parameters**: Embedding size, number of layers, aggregation functions
+- **Model Parameters**: Embedding size, number of layers
 - **Training Settings**: Normalization, global readout options
+
+#### `ModuleConfig`
+Configuration class for R-GNN neural network modules:
+- **Aggregation Function**: How messages are aggregated (mean, sum, max, etc.)
+- **Message Function**: How messages are computed between related nodes
+- **Update Function**: How node embeddings are updated with aggregated messages
 
 #### Encoder/Decoder Classes
 Extensible class-based system for defining inputs and outputs:
@@ -82,7 +94,7 @@ Extensible class-based system for defining inputs and outputs:
 
 #### `RelationalGraphNeuralNetwork`
 The main R-GNN model class that:
-- Takes hyperparameter config, input specification, and output specification
+- Takes hyperparameter config, module config, input specification, and output specification
 - Processes relational graph structures from PDDL problems
 - Supports extensible encoder/decoder system for custom input/output handling
 - Handles batched inference efficiently
@@ -103,18 +115,20 @@ Inherit from `Decoder` base class to define custom output readout:
 ```python
 input_spec = (StateEncoder(), GoalEncoder(), GroundActionsEncoder())
 output_spec = [
-    ('actor', ActionScalarDecoder(config)),
-    ('critic', ObjectsScalarDecoder(config)), 
+    ('actor', ActionScalarDecoder(hparam_config)),
+    ('critic', ObjectsScalarDecoder(hparam_config)), 
     ('embeddings', ActionEmbeddingDecoder())
 ]
 ```
 
 ### Aggregation Functions
 
-- **`AggregationFunction.Add`**: Sum aggregation
-- **`AggregationFunction.Mean`**: Mean aggregation
-- **`AggregationFunction.HardMaximum`**: Hard maximum
-- **`AggregationFunction.SmoothMaximum`**: Smooth maximum (LogSumExp)
+Available in the `ModuleConfig`:
+
+- **`MeanAggregation()`**: Mean aggregation
+- **`SumAggregation()`**: Sum aggregation
+- **`HardMaximumAggregation()`**: Hard maximum
+- **`SmoothMaximumAggregation()`**: Smooth maximum (LogSumExp)
 
 ## Examples and Tutorials
 
