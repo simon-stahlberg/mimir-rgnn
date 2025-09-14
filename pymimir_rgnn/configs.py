@@ -47,15 +47,15 @@ class HyperparameterConfig:
 @dataclass
 class ModuleConfig:
     """Configuration for neural network modules used in the RGNN."""
-    
+
     aggregation_function: 'AggregationFunction' = field(
         metadata={'doc': 'The aggregation function used to combine messages.'}
     )
-    
+
     message_function: 'MessageFunction' = field(
         metadata={'doc': 'The message function used to compute messages between nodes.'}
     )
-    
+
     update_function: 'UpdateFunction' = field(
         metadata={'doc': 'The update function used to update node embeddings.'}
     )

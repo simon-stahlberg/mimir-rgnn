@@ -3,6 +3,7 @@ import torch
 from .configs import HyperparameterConfig
 from .modules import MLP
 
+
 class MLPUpdates:
     def __init__(self, config: HyperparameterConfig):
         super().__init__()

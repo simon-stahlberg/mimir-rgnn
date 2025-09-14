@@ -6,7 +6,7 @@ from dataclasses import fields
 from pathlib import Path
 from typing import Any, Callable, Union
 
-from .bases import AggregationFunction, Encoder, MessageFunction, UpdateFunction
+from .bases import Encoder
 from .configs import HyperparameterConfig, ModuleConfig
 from .decoders import Decoder
 from .encoders import EncodedTensors, get_input_from_encoders
@@ -26,9 +26,7 @@ class ForwardState:
         return self._readouts[name]()
 
 class RelationalMessagePassingModule(nn.Module):
-    def __init__(self,
-                 hparam_config: HyperparameterConfig,
-                 module_config: ModuleConfig):
+    def __init__(self, hparam_config: HyperparameterConfig, module_config: ModuleConfig):
         super().__init__()  # type: ignore
         self._embedding_size = hparam_config.embedding_size
         self._aggregation = module_config.aggregation_function
@@ -57,9 +55,7 @@ class RelationalMessagePassingModule(nn.Module):
 
 
 class RelationalLayersModule(nn.Module):
-    def __init__(self,
-                 hparam_config: HyperparameterConfig,
-                 module_config: ModuleConfig):
+    def __init__(self, hparam_config: HyperparameterConfig, module_config: ModuleConfig):
         super().__init__()  # type: ignore
         self._config = hparam_config
         self._relation_network = RelationalMessagePassingModule(hparam_config, module_config)
@@ -138,14 +134,11 @@ class RelationalGraphNeuralNetwork(nn.Module):
         for hook in self._hooks:
             hook(forward_state)
 
-    def get_config(self) -> HyperparameterConfig:
+    def get_hparam_config(self) -> HyperparameterConfig:
         return self._hparam_config
 
-    def get_layer_count(self) -> int:
-        return self._hparam_config.num_layers
-
-    def set_layer_count(self, count: int) -> None:
-        self._hparam_config.num_layers = count
+    def get_module_config(self) -> ModuleConfig:
+        return self._module_config
 
     def add_hook(self, hook_func: Callable[[ForwardState], None]) -> None:
         self._hooks.append(hook_func)
@@ -210,16 +203,15 @@ class RelationalGraphNeuralNetwork(nn.Module):
         :param extras: Additional information to store in the checkpoint.
         :type extras: dict
         """
-        config_dict = { f.name: getattr(self._hparam_config, f.name) for f in fields(self._hparam_config) }
-        del config_dict['domain']  # The domain is cannot be serialized.
+        module_dict = { f.name: getattr(self._module_config, f.name) for f in fields(self._module_config) }
+        hparam_dict = { f.name: getattr(self._hparam_config, f.name) for f in fields(self._hparam_config) }
+        del hparam_dict['domain']  # The domain is cannot be serialized.
         checkpoint = {
             'model': self.state_dict(),
-            'config': config_dict,
+            'hparam_config': hparam_dict,
+            'module_config': module_dict,
             'input_spec': self._input_spec,
             'output_spec': self._output_spec,
-            'aggregation_function': self._module_config.aggregation_function,
-            'message_function': self._module_config.message_function,
-            'update_function': self._module_config.update_function,
             'extras': extras
         }
         torch.save(checkpoint, path)
@@ -238,22 +230,16 @@ class RelationalGraphNeuralNetwork(nn.Module):
         :return: A tuple containing the loaded model and a dictionary with additional information (e.g., optimizer state).
         :rtype: tuple[RelationalGraphNeuralNetwork, dict]
         """
-        # weights_only=False is needed due to unpickle errors related to our enums.
+        # weights_only=False is needed due to unpickle errors.
         checkpoint = torch.load(path, map_location=device, weights_only=False)
-        config_dict = checkpoint['config']
+        module_dict = checkpoint['module_config']
+        hparam_dict = checkpoint['hparam_config']
         input_spec = checkpoint['input_spec']
         output_spec = checkpoint['output_spec']
-        aggregation_function = checkpoint['aggregation_function']
-        message_function = checkpoint['message_function']
-        update_function = checkpoint['update_function']
         model_dict = checkpoint['model']
         extras_dict = checkpoint['extras']
-        config = HyperparameterConfig(domain=domain, **config_dict)
-        module_config = ModuleConfig(
-            aggregation_function=aggregation_function,
-            message_function=message_function,
-            update_function=update_function
-        )
-        model = RelationalGraphNeuralNetwork(config, module_config, input_spec, output_spec)
+        module_config = ModuleConfig(**module_dict)
+        hparam_config = HyperparameterConfig(domain=domain, **hparam_dict)
+        model = RelationalGraphNeuralNetwork(hparam_config, module_config, input_spec, output_spec)
         model.load_state_dict(model_dict)
         return model.to(device), extras_dict

@@ -6,7 +6,6 @@ from .encoders import EncodedTensors
 from .modules import SumReadout, MLP
 
 
-# Decoder implementations
 class ActionScalarDecoder(Decoder):
     """Decoder for scalar values over actions."""
 
