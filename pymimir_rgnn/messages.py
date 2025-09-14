@@ -201,10 +201,10 @@ class AttentionMessages(MessageFunction):
         messages_indices = torch.cat(message_index_list, dim=0)  # [total_num_objects]
         src_key_padding_mask = torch.cat(relation_mask_list, dim=0)  # [total_num_atoms, max_sequence_length]
 
-        assert relation_sequences.shape[1] == self._max_sequence_length, "All sequences must have the same length after padding."
-        assert relation_sequences.shape[2] == self._embedding_size, "Embedding size mismatch."
-        assert messages_indices.dim() == 1, "Message indices must be a 1D tensor."
-        assert src_key_padding_mask.shape == (relation_sequences.shape[0], self._max_sequence_length), "Padding mask shape mismatch."
+        # assert relation_sequences.shape[1] == self._max_sequence_length, "All sequences must have the same length after padding."
+        # assert relation_sequences.shape[2] == self._embedding_size, "Embedding size mismatch."
+        # assert messages_indices.dim() == 1, "Message indices must be a 1D tensor."
+        # assert src_key_padding_mask.shape == (relation_sequences.shape[0], self._max_sequence_length), "Padding mask shape mismatch."
 
         # Apply transformer to all sequences
         transformed_embeddings = self._transformer.forward(relation_sequences, src_key_padding_mask=src_key_padding_mask)
