@@ -223,29 +223,43 @@ class AttentionMessages(MessageFunction):
         # Apply transformer to all sequences in parallel - SINGLE CALL!
         transformed_embeddings = self._transformer(batched_sequences, src_key_padding_mask=src_key_padding_mask)
         
-        # Extract object messages from batched output and rebuild per-relation structure
-        output_messages_list: list[torch.Tensor] = []
+        # More efficiently extract object messages by building a tensor of indices
+        # that properly accounts for predicate tokens and padding
         
+        # Build indices for message extraction - skip predicate tokens (position 0)
+        message_indices: list[int] = []
         seq_start = 0
+        
         for i, arity in enumerate(relation_arities):
             num_atoms_in_relation = relation_sequences[i].shape[0]
             
-            # Extract transformed sequences for this relation
-            relation_transformed = transformed_embeddings[seq_start:seq_start + num_atoms_in_relation]
+            # For each atom in this relation, add indices for its object positions (skip position 0)
+            for atom_idx in range(num_atoms_in_relation):
+                absolute_seq_idx = seq_start + atom_idx
+                # Add indices for object positions (1 to arity, skipping predicate at position 0)
+                for pos in range(1, arity + 1):
+                    flat_idx = absolute_seq_idx * self._max_sequence_length + pos
+                    message_indices.append(flat_idx)
             
-            # Extract object messages (skip predicate at position 0)
-            object_messages = relation_transformed[:, 1:arity+1, :]  # [num_atoms, arity, embedding_size]
-            object_messages = object_messages.reshape(-1, self._embedding_size)  # [num_atoms * arity, embedding_size]
-            
-            # Add residual connection with original object embeddings
-            original_object_embeddings = relation_original_embeddings[i].reshape(-1, self._embedding_size)
-            final_messages = object_messages + original_object_embeddings
-            
-            output_messages_list.append(final_messages)
             seq_start += num_atoms_in_relation
         
-        # Concatenate all messages and indices
-        output_messages = torch.cat(output_messages_list, 0)
+        # Convert to tensor and use index_select to get all object messages at once
+        if message_indices:
+            message_indices_tensor = torch.tensor(message_indices, device=device, dtype=torch.long)
+            
+            # Flatten transformed embeddings for efficient selection
+            flat_transformed = transformed_embeddings.view(-1, self._embedding_size)
+            object_messages = torch.index_select(flat_transformed, 0, message_indices_tensor)
+            
+            # Get original object embeddings for residual connection
+            original_object_embeddings = torch.cat([emb.reshape(-1, self._embedding_size) 
+                                                   for emb in relation_original_embeddings], dim=0)
+            
+            # Add residual connection
+            output_messages = object_messages + original_object_embeddings
+        else:
+            output_messages = torch.empty(0, self._embedding_size, device=device)
+        
         output_indices = batched_indices
             
         return output_messages, output_indices
