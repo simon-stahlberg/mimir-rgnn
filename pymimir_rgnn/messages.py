@@ -109,13 +109,14 @@ class AttentionMessages(MessageFunction):
         # TransformerEncoderLayer for parallel message computation
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=hparam_config.embedding_size,
-            nhead=8,  # Standard number of attention heads
+            nhead=4,  # Standard choice
             dim_feedforward=hparam_config.embedding_size * 4,  # Standard multiplier
-            dropout=0.1,
-            activation='relu',
-            batch_first=True
+            activation='gelu',
+            batch_first=True,
+            dropout=0.0,
+            layer_norm_eps=0.0
         )
-        self._transformer = nn.TransformerEncoder(encoder_layer, num_layers=2)
+        self._transformer = nn.TransformerEncoder(encoder_layer, num_layers=4)
 
     def setup(self, relations: dict[str, torch.Tensor]) -> None:
         """Pre-compute static parts that don't change across layers.
@@ -178,8 +179,8 @@ class AttentionMessages(MessageFunction):
             all_padding_masks.append(padding_mask)
 
             # Message extraction indices
-            object_indices = torch.arange(1, sequence_length)
-            atom_offsets = torch.arange(num_atoms) * self._max_sequence_length
+            object_indices = torch.arange(1, sequence_length, dtype=torch.long, device=device)
+            atom_offsets = torch.arange(num_atoms, dtype=torch.long, device=device) * self._max_sequence_length
             relation_message_indices = (object_indices.unsqueeze(0) + atom_offsets.unsqueeze(1)).reshape(-1)
             message_indices.append(relation_message_indices + relation_offset * self._max_sequence_length)
 
