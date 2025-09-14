@@ -1,10 +1,11 @@
 import torch
 
+from .bases import UpdateFunction
 from .configs import HyperparameterConfig
 from .modules import MLP
 
 
-class MLPUpdates:
+class MLPUpdates(UpdateFunction):
     """Update function using a multi-layer perceptron for node embedding updates.
 
     This update function uses an MLP to compute new node embeddings based on

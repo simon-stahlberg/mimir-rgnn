@@ -29,12 +29,12 @@ def test_create_model(dom: str, agg: AggregationFunction, layers: int, size: int
         global_readout=gro,
         normalize_updates=norm,
     )
-    input_spec=(StateEncoder(), GroundActionsEncoder(), GoalEncoder())
-    output_spec=[('q_values', ActionScalarDecoder(hparam_config))]
+    input_spec = (StateEncoder(), GroundActionsEncoder(), GoalEncoder())
+    output_spec = [('q_values', ActionScalarDecoder(hparam_config))]
     module_config = ModuleConfig(
         aggregation_function=agg,
-        message_function=PredicateMLPMessages(hparam_config, input_spec),  # type: ignore
-        update_function=MLPUpdates(hparam_config)  # type: ignore
+        message_function=PredicateMLPMessages(hparam_config, input_spec),
+        update_function=MLPUpdates(hparam_config)
     )
     model = RelationalGraphNeuralNetwork(hparam_config, module_config, input_spec, output_spec)  # type: ignore
     assert model is not None
@@ -66,8 +66,8 @@ def test_forward_model(dom: str, agg: AggregationFunction, layers: int, size: in
     output_spec=[('q_values', ActionScalarDecoder(hparam_config))]
     module_config = ModuleConfig(
         aggregation_function=agg,
-        message_function=PredicateMLPMessages(hparam_config, input_spec),  # type: ignore
-        update_function=MLPUpdates(hparam_config)  # type: ignore
+        message_function=PredicateMLPMessages(hparam_config, input_spec),
+        update_function=MLPUpdates(hparam_config)
     )
     model = RelationalGraphNeuralNetwork(hparam_config, module_config, input_spec, output_spec)  # type: ignore
     initial_state = problem.get_initial_state()
@@ -95,8 +95,8 @@ def test_forward_hook(domain_name: str):
     output_spec=[('value', ObjectsScalarDecoder(hparam_config))]
     module_config = ModuleConfig(
         aggregation_function=SmoothMaximumAggregation(),
-        message_function=PredicateMLPMessages(hparam_config, input_spec),  # type: ignore
-        update_function=MLPUpdates(hparam_config)  # type: ignore
+        message_function=PredicateMLPMessages(hparam_config, input_spec),
+        update_function=MLPUpdates(hparam_config)
     )
     model = RelationalGraphNeuralNetwork(hparam_config, module_config, input_spec, output_spec)  # type: ignore
     initial_state = problem.get_initial_state()
@@ -132,8 +132,8 @@ def test_forward_identical_batch(domain_name: str):
     output_spec=[('value', ObjectsScalarDecoder(hparam_config))]
     module_config = ModuleConfig(
         aggregation_function=MeanAggregation(),
-        message_function=PredicateMLPMessages(hparam_config, input_spec),  # type: ignore
-        update_function=MLPUpdates(hparam_config)  # type: ignore
+        message_function=PredicateMLPMessages(hparam_config, input_spec),
+        update_function=MLPUpdates(hparam_config)
     )
     model = RelationalGraphNeuralNetwork(hparam_config, module_config, input_spec, output_spec)  # type: ignore
     initial_state = problem.get_initial_state()
@@ -161,8 +161,8 @@ def test_forward_different_batch(domain_name: str):
     output_spec=[('value', ObjectsScalarDecoder(hparam_config))]
     module_config = ModuleConfig(
         aggregation_function=SumAggregation(),
-        message_function=PredicateMLPMessages(hparam_config, input_spec),  # type: ignore
-        update_function=MLPUpdates(hparam_config)  # type: ignore
+        message_function=PredicateMLPMessages(hparam_config, input_spec),
+        update_function=MLPUpdates(hparam_config)
     )
     model = RelationalGraphNeuralNetwork(hparam_config, module_config, input_spec, output_spec)  # type: ignore
     initial_state = problem.get_initial_state()
@@ -190,8 +190,8 @@ def test_save_and_load():
     output_spec=[('q_values', ActionScalarDecoder(hparam_config_1))]
     module_config_1 = ModuleConfig(
         aggregation_function=MeanAggregation(),
-        message_function=PredicateMLPMessages(hparam_config_1, input_spec),  # type: ignore
-        update_function=MLPUpdates(hparam_config_1)  # type: ignore
+        message_function=PredicateMLPMessages(hparam_config_1, input_spec),
+        update_function=MLPUpdates(hparam_config_1)
     )
     model_1 = RelationalGraphNeuralNetwork(hparam_config_1, module_config_1, input_spec, output_spec)  # type: ignore
     # Save the model with some extras.
@@ -227,8 +227,8 @@ def test_simple_forward(domain_name: str):
 
     module_config = ModuleConfig(
         aggregation_function=HardMaximumAggregation(),
-        message_function=PredicateMLPMessages(hparam_config, input_spec),  # type: ignore
-        update_function=MLPUpdates(hparam_config)  # type: ignore
+        message_function=PredicateMLPMessages(hparam_config, input_spec),
+        update_function=MLPUpdates(hparam_config)
     )
     model = RelationalGraphNeuralNetwork(hparam_config, module_config, input_spec, output_spec)  # type: ignore
 
@@ -269,8 +269,8 @@ def test_decoder_constructors():
     output_spec_1=[('q_values', ActionScalarDecoder(hparam_config_1))]
     module_config_1 = ModuleConfig(
         aggregation_function=MeanAggregation(),
-        message_function=PredicateMLPMessages(hparam_config_1, input_spec_1),  # type: ignore
-        update_function=MLPUpdates(hparam_config_1)  # type: ignore
+        message_function=PredicateMLPMessages(hparam_config_1, input_spec_1),
+        update_function=MLPUpdates(hparam_config_1)
     )
     model_1 = RelationalGraphNeuralNetwork(hparam_config_1, module_config_1, input_spec_1, output_spec_1)  # type: ignore
 
@@ -284,8 +284,8 @@ def test_decoder_constructors():
     output_spec_2=[('object_values', ObjectsScalarDecoder(hparam_config_2))]
     module_config_2 = ModuleConfig(
         aggregation_function=MeanAggregation(),
-        message_function=PredicateMLPMessages(hparam_config_2, input_spec_2),  # type: ignore
-        update_function=MLPUpdates(hparam_config_2)  # type: ignore
+        message_function=PredicateMLPMessages(hparam_config_2, input_spec_2),
+        update_function=MLPUpdates(hparam_config_2)
     )
     model_2 = RelationalGraphNeuralNetwork(hparam_config_2, module_config_2, input_spec_2, output_spec_2)  # type: ignore
 
@@ -299,8 +299,8 @@ def test_decoder_constructors():
     output_spec_3=[('action_embeddings', ActionEmbeddingDecoder())]
     module_config_3 = ModuleConfig(
         aggregation_function=MeanAggregation(),
-        message_function=PredicateMLPMessages(hparam_config_3, input_spec_3),  # type: ignore
-        update_function=MLPUpdates(hparam_config_3)  # type: ignore
+        message_function=PredicateMLPMessages(hparam_config_3, input_spec_3),
+        update_function=MLPUpdates(hparam_config_3)
     )
     model_3 = RelationalGraphNeuralNetwork(hparam_config_3, module_config_3, input_spec_3, output_spec_3)  # type: ignore
 
@@ -314,7 +314,7 @@ def test_decoder_constructors():
     output_spec_4=[('object_embeddings', ObjectsEmbeddingDecoder())]
     module_config_4 = ModuleConfig(
         aggregation_function=MeanAggregation(),
-        message_function=PredicateMLPMessages(hparam_config_4, input_spec_4),  # type: ignore
-        update_function=MLPUpdates(hparam_config_4)  # type: ignore
+        message_function=PredicateMLPMessages(hparam_config_4, input_spec_4),
+        update_function=MLPUpdates(hparam_config_4)
     )
     model_4 = RelationalGraphNeuralNetwork(hparam_config_4, module_config_4, input_spec_4, output_spec_4)  # type: ignore

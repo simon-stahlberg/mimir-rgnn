@@ -1,12 +1,12 @@
 import torch
 import torch.nn as nn
 
-from .bases import Encoder
+from .bases import Encoder, MessageFunction
 from .configs import HyperparameterConfig
 from .encoders import get_relations_from_encoders
 from .modules import MLP
 
-class PredicateMLPMessages:
+class PredicateMLPMessages(MessageFunction):
     """Message function using separate MLPs for each predicate relation.
 
     This message function creates a separate multi-layer perceptron (MLP) for
@@ -23,6 +23,7 @@ class PredicateMLPMessages:
             config: The hyperparameter configuration containing embedding sizes.
             input_spec: The input specification to determine which relations exist.
         """
+        super().__init__()
         self._embedding_size = config.embedding_size
         self._relation_mlps = nn.ModuleDict()
         relations = get_relations_from_encoders(config.domain, input_spec)
@@ -51,7 +52,7 @@ class PredicateMLPMessages:
         messages = relation_module(argument_embeddings.view(-1, relation_module.input_size))
         return messages
 
-    def forward(self, node_embeddings: torch.Tensor, relations: dict[str, torch.Tensor]):
+    def forward(self, node_embeddings: torch.Tensor, relations: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
         """Compute messages and indices for all relations.
 
         Args:

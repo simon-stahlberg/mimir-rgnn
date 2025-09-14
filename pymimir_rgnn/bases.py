@@ -139,7 +139,7 @@ class MessageFunction(ABC, torch.nn.Module):
         super().__init__()
 
     @abstractmethod
-    def forward(self, node_embeddings: torch.Tensor, relations: dict[str, torch.Tensor]) -> torch.Tensor:
+    def forward(self, node_embeddings: torch.Tensor, relations: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
         """Compute messages and indices for all relations.
 
         Args:
