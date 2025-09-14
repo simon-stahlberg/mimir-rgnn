@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 
+from typing import Any
 from .bases import Encoder, MessageFunction
 from .configs import HyperparameterConfig
 from .encoders import get_relations_from_encoders
@@ -116,24 +117,177 @@ class AttentionMessages(MessageFunction):
         self._transformer = nn.TransformerEncoder(encoder_layer, num_layers=2)
 
     def setup(self, relations: dict[str, torch.Tensor]) -> None:
-        # TODO: This function is called before the first forward pass in the message passing phase.
-        # The actual message passing structure is always the same between all layers, so much of the code can be moved here.
-        # The forward pass requires a lot of setup before the actual computation.
-        # The only part that cannot be moved here is creating the object tokens from node embeddings since they can change between layers.
-        # The idea is as follows: create all static parts here (predicate embeddings, positional embeddings, padding masks, etc.)
-        # and store them inside of self._cache = {...}. Furthermore, create an index vector for selecting the node embeddings to efficiently create all object tokens.
-        # Then, in the forward pass, only create the object tokens from node embeddings and combine them with the static parts to create the full sequences.
-        # The corresponding `cleanup` function can be used to clear the cache after the message passing phase is done.
-        pass
+        """Pre-compute static parts that don't change across layers.
+        
+        Args:
+            relations: Dictionary mapping relation names to their argument indices.
+        """
+        if not relations:
+            self._cache = {}
+            return
+            
+        device = next(iter(relations.values())).device if relations else torch.device('cpu')
+        
+        # Cache structure for each relation
+        relation_caches = {}
+        
+        for relation_name, argument_indices in relations.items():
+            if argument_indices.numel() == 0:
+                continue
+                
+            arity = self._relation_arities[relation_name]
+            predicate_id = self._predicate_to_idx[relation_name]
+            
+            # Reshape argument indices to group them by ground atoms
+            num_atoms = argument_indices.shape[0] // arity
+            atom_indices = argument_indices.view(num_atoms, arity)  # [num_atoms, arity]
+            
+            # Pre-compute predicate embeddings for each atom
+            predicate_embedding = self._predicate_embeddings(torch.full((num_atoms,), predicate_id, device=device))
+            predicate_embedding = predicate_embedding.unsqueeze(1)  # [num_atoms, 1, embedding_size]
+            
+            # Pre-compute positional embeddings for this relation's sequence length
+            sequence_length = arity + 1
+            positions = torch.arange(sequence_length, device=device)
+            positional_embeddings = self._positional_embeddings(positions).unsqueeze(0)  # [1, arity+1, embedding_size]
+            
+            # Pre-compute padding masks
+            padding_mask = torch.zeros(num_atoms, self._max_sequence_length, dtype=torch.bool, device=device)
+            if sequence_length < self._max_sequence_length:
+                padding_mask[:, sequence_length:] = True  # Mask padding positions
+                
+            # Pre-compute padding tokens if needed
+            padding_tokens = None
+            if sequence_length < self._max_sequence_length:
+                padding_size = self._max_sequence_length - sequence_length
+                padding_tokens = torch.zeros(num_atoms, padding_size, self._embedding_size, device=device)
+            
+            # Store everything for this relation
+            relation_caches[relation_name] = {
+                'atom_indices': atom_indices,  # [num_atoms, arity] - for selecting object embeddings
+                'predicate_embedding': predicate_embedding,  # [num_atoms, 1, embedding_size]
+                'positional_embeddings': positional_embeddings,  # [1, arity+1, embedding_size]  
+                'padding_mask': padding_mask,  # [num_atoms, max_sequence_length]
+                'padding_tokens': padding_tokens,  # [num_atoms, padding_size, embedding_size] or None
+                'sequence_length': sequence_length,
+                'num_atoms': num_atoms,
+                'arity': arity
+            }
+        
+        # Pre-compute message and output indices for batched processing
+        message_index_list = []
+        output_index_list = []
+        output_offset = 0
+        
+        for relation_name, argument_indices in relations.items():
+            if argument_indices.numel() == 0:
+                continue
+                
+            cache = relation_caches[relation_name]
+            num_atoms = cache['num_atoms']
+            arity = cache['arity']
+            sequence_length = cache['sequence_length']
+            
+            # Compute message indices for extracting object embeddings after transformer
+            messages_arguments_indices = torch.arange(1, sequence_length, dtype=torch.long, device=device)
+            messages_arguments_offsets = torch.arange(num_atoms, dtype=torch.long, device=device) * self._max_sequence_length
+            messages_indices = (messages_arguments_indices.unsqueeze(0) + messages_arguments_offsets.unsqueeze(1)).reshape(-1)
+            messages_indices += output_offset
+            output_offset += num_atoms * self._max_sequence_length
+            
+            message_index_list.append(messages_indices)
+            output_index_list.append(argument_indices)
+        
+        # Store global indices
+        self._cache = {
+            'relation_caches': relation_caches,
+            'message_indices': torch.cat(message_index_list, dim=0) if message_index_list else torch.empty(0, dtype=torch.long, device=device),
+            'output_indices': torch.cat(output_index_list, dim=0) if output_index_list else torch.empty(0, dtype=torch.long, device=device),
+            'has_data': len(relation_caches) > 0
+        }
 
     def cleanup(self) -> None:
-        # TODO: This function is called after the last forward pass in the message passing phase.
-        # Clear any cached data created in the `setup` function to free up memory.
-        pass
+        """Clear cached data to free up memory.
+        
+        This is called after the message passing phase is complete.
+        """
+        if hasattr(self, '_cache'):
+            del self._cache
 
     def forward(self, node_embeddings: torch.Tensor, relations: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
         """Compute messages using transformer attention for all relations in a single pass.
 
+        Args:
+            node_embeddings: The current node embeddings.
+            relations: Dictionary mapping relation names to their argument indices.
+
+        Returns:
+            Tuple of (messages, indices) for aggregation.
+        """
+        # Use cached data if setup was called, otherwise fall back to original logic
+        if not hasattr(self, '_cache') or not self._cache.get('has_data', False):
+            # Fallback to original implementation if cache is not available
+            return self._forward_original(node_embeddings, relations)
+            
+        # Fast path using cached data
+        relation_sequence_list: list[torch.Tensor] = []
+        relation_mask_list: list[torch.Tensor] = []
+        
+        cache = self._cache
+        relation_caches = cache['relation_caches']  # type: ignore
+        
+        # Process relations in the same order as the original implementation
+        for relation_name, argument_indices in relations.items():
+            if argument_indices.numel() == 0:
+                continue
+            
+            if relation_name not in relation_caches:  # type: ignore
+                # This shouldn't happen if setup was called correctly
+                continue
+                
+            rel_cache = relation_caches[relation_name]  # type: ignore
+            
+            # Get object embeddings using cached indices
+            atom_indices = rel_cache['atom_indices']  # [num_atoms, arity]
+            object_embeddings = torch.index_select(node_embeddings, 0, atom_indices.view(-1))
+            object_embeddings = object_embeddings.view(rel_cache['num_atoms'], rel_cache['arity'], self._embedding_size)
+            
+            # Combine with cached predicate embeddings
+            sequence_embeddings = torch.cat([rel_cache['predicate_embedding'], object_embeddings], dim=1)
+            
+            # Add cached positional embeddings
+            sequence_embeddings = sequence_embeddings + rel_cache['positional_embeddings']
+            
+            # Add cached padding if needed
+            if rel_cache['padding_tokens'] is not None:
+                sequence_embeddings = torch.cat([sequence_embeddings, rel_cache['padding_tokens']], dim=1)
+            
+            relation_sequence_list.append(sequence_embeddings)
+            relation_mask_list.append(rel_cache['padding_mask'])
+        
+        if not relation_sequence_list:
+            # No valid sequences found
+            device = node_embeddings.device
+            empty_messages = torch.empty(0, self._embedding_size, device=device)
+            empty_indices = torch.empty(0, dtype=torch.long, device=device)
+            return empty_messages, empty_indices
+        
+        # Batch all sequences together
+        relation_sequences = torch.cat(relation_sequence_list, dim=0)
+        src_key_padding_mask = torch.cat(relation_mask_list, dim=0)
+        
+        # Apply transformer to all sequences
+        transformed_embeddings = self._transformer.forward(relation_sequences, src_key_padding_mask=src_key_padding_mask)
+        transformed_embeddings = transformed_embeddings.view(-1, self._embedding_size)
+        
+        # Extract object messages using cached indices
+        output_messages = transformed_embeddings.index_select(0, cache['message_indices'])  # type: ignore
+        
+        return output_messages, cache['output_indices']  # type: ignore
+    
+    def _forward_original(self, node_embeddings: torch.Tensor, relations: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+        """Original forward implementation as fallback when cache is not available.
+        
         Args:
             node_embeddings: The current node embeddings.
             relations: Dictionary mapping relation names to their argument indices.
@@ -216,11 +370,6 @@ class AttentionMessages(MessageFunction):
         relation_sequences = torch.cat(relation_sequence_list, dim=0)  # [total_num_atoms, max_sequence_length, embedding_size]
         messages_indices = torch.cat(message_index_list, dim=0)  # [total_num_objects]
         src_key_padding_mask = torch.cat(relation_mask_list, dim=0)  # [total_num_atoms, max_sequence_length]
-
-        # assert relation_sequences.shape[1] == self._max_sequence_length, "All sequences must have the same length after padding."
-        # assert relation_sequences.shape[2] == self._embedding_size, "Embedding size mismatch."
-        # assert messages_indices.dim() == 1, "Message indices must be a 1D tensor."
-        # assert src_key_padding_mask.shape == (relation_sequences.shape[0], self._max_sequence_length), "Padding mask shape mismatch."
 
         # Apply transformer to all sequences
         transformed_embeddings = self._transformer.forward(relation_sequences, src_key_padding_mask=src_key_padding_mask)
