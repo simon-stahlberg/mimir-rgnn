@@ -2,7 +2,8 @@ from .aggregations import HardMaximumAggregation, MeanAggregation, SmoothMaximum
 from .bases import AggregationFunction, MessageFunction, UpdateFunction, Encoder, Decoder
 from .decoders import ActionScalarDecoder, ActionEmbeddingDecoder, ObjectsScalarDecoder, ObjectsEmbeddingDecoder
 from .encoders import StateEncoder, GoalEncoder, GroundActionsEncoder, TransitionEffectsEncoder
-from .model import ForwardState, HyperparameterConfig, RelationalGraphNeuralNetwork
+from .configs import HyperparameterConfig, ModuleConfig
+from .model import ForwardState, RelationalGraphNeuralNetwork
 from .messages import PredicateMLPMessages
 from .updates import MLPUpdates
 
@@ -20,6 +21,7 @@ __all__ = [
     "MeanAggregation",
     "MessageFunction",
     "MLPUpdates",
+    "ModuleConfig",
     "ObjectsEmbeddingDecoder",
     "ObjectsScalarDecoder",
     "PredicateMLPMessages",
