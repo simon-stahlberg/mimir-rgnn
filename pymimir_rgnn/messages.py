@@ -128,7 +128,7 @@ class AttentionMessages(MessageFunction):
         self._transformer = nn.TransformerEncoder(encoder_layer, num_layers=2)
     
     def forward(self, node_embeddings: torch.Tensor, relations: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
-        """Compute messages using transformer attention for all relations.
+        """Compute messages using transformer attention for all relations in a single pass.
         
         Args:
             node_embeddings: The current node embeddings.
@@ -144,8 +144,13 @@ class AttentionMessages(MessageFunction):
             empty_indices = torch.empty(0, dtype=torch.long, device=device)
             return empty_messages, empty_indices
         
-        output_messages_list: list[torch.Tensor] = []
-        output_indices_list: list[torch.Tensor] = []
+        device = node_embeddings.device
+        
+        # Collect all sequences and their metadata - keep per relation for easier processing
+        relation_sequences: list[torch.Tensor] = []
+        relation_original_embeddings: list[torch.Tensor] = []
+        relation_indices: list[torch.Tensor] = []
+        relation_arities: list[int] = []
         
         for relation_name, argument_indices in relations.items():
             if argument_indices.numel() == 0:
@@ -166,52 +171,81 @@ class AttentionMessages(MessageFunction):
             object_embeddings = object_embeddings.view(num_atoms, arity, self._embedding_size)
             
             # Create predicate embeddings for each atom
-            predicate_emb = self._predicate_embeddings(torch.full((num_atoms,), predicate_id, device=node_embeddings.device))
+            predicate_emb = self._predicate_embeddings(torch.full((num_atoms,), predicate_id, device=device))
             predicate_emb = predicate_emb.unsqueeze(1)  # [num_atoms, 1, embedding_size]
             
             # Combine predicate and object embeddings into sequences
             sequence_embeddings = torch.cat([predicate_emb, object_embeddings], dim=1)  # [num_atoms, arity+1, embedding_size]
             
-            # Add positional embeddings
-            positions = torch.arange(arity + 1, device=node_embeddings.device)
+            # Add positional embeddings for this relation's sequence length
+            positions = torch.arange(arity + 1, device=device)
             pos_embeddings = self._positional_embeddings(positions).unsqueeze(0)  # [1, arity+1, embedding_size]
             sequence_embeddings = sequence_embeddings + pos_embeddings
             
-            # Create attention mask - no masking needed since all sequences have same length for this relation
-            # but we need to handle padding if max_sequence_length > arity + 1
-            if self._max_sequence_length > arity + 1:
-                # Pad sequences to max length
-                padding_size = self._max_sequence_length - (arity + 1)
-                padding = torch.zeros(num_atoms, padding_size, self._embedding_size, device=node_embeddings.device)
+            # Pad to max sequence length for this batch
+            if sequence_embeddings.shape[1] < self._max_sequence_length:
+                padding_size = self._max_sequence_length - sequence_embeddings.shape[1]
+                padding = torch.zeros(num_atoms, padding_size, self._embedding_size, device=device)
                 sequence_embeddings = torch.cat([sequence_embeddings, padding], dim=1)
-                
-                # Create attention mask (True means ignore, False means attend)
-                src_key_padding_mask = torch.zeros(num_atoms, self._max_sequence_length, dtype=torch.bool, device=node_embeddings.device)
-                src_key_padding_mask[:, arity + 1:] = True
-            else:
-                src_key_padding_mask = None
             
-            # Apply transformer
-            transformed_embeddings = self._transformer(sequence_embeddings, src_key_padding_mask=src_key_padding_mask)
+            # Store per relation (don't concatenate yet - different arities)
+            relation_sequences.append(sequence_embeddings)
+            relation_original_embeddings.append(object_embeddings)
+            relation_indices.append(atom_indices.flatten())
+            relation_arities.append(arity)
+        
+        if not relation_sequences:
+            # No valid sequences found
+            empty_messages = torch.empty(0, self._embedding_size, device=device)
+            empty_indices = torch.empty(0, dtype=torch.long, device=device)
+            return empty_messages, empty_indices
+        
+        # Batch all sequences together (now they all have the same sequence length)
+        batched_sequences = torch.cat(relation_sequences, dim=0)  # [total_num_atoms, max_sequence_length, embedding_size]
+        batched_indices = torch.cat(relation_indices, dim=0)  # [total_num_objects]
+        
+        # Create attention mask for variable-length sequences across different relations
+        src_key_padding_mask = torch.zeros(batched_sequences.shape[0], self._max_sequence_length, 
+                                         dtype=torch.bool, device=device)
+        
+        # Fill mask based on actual sequence lengths per relation
+        seq_idx = 0
+        for i, arity in enumerate(relation_arities):
+            actual_seq_len = arity + 1  # +1 for predicate
+            num_atoms_in_relation = relation_sequences[i].shape[0]
             
-            # Extract messages for objects (skip predicate at position 0)
-            object_messages = transformed_embeddings[:, 1:arity+1, :]  # [num_atoms, arity, embedding_size]
+            # Mask padding positions for this relation's atoms
+            if actual_seq_len < self._max_sequence_length:
+                src_key_padding_mask[seq_idx:seq_idx + num_atoms_in_relation, actual_seq_len:] = True
+            
+            seq_idx += num_atoms_in_relation
+        
+        # Apply transformer to all sequences in parallel - SINGLE CALL!
+        transformed_embeddings = self._transformer(batched_sequences, src_key_padding_mask=src_key_padding_mask)
+        
+        # Extract object messages from batched output and rebuild per-relation structure
+        output_messages_list: list[torch.Tensor] = []
+        
+        seq_start = 0
+        for i, arity in enumerate(relation_arities):
+            num_atoms_in_relation = relation_sequences[i].shape[0]
+            
+            # Extract transformed sequences for this relation
+            relation_transformed = transformed_embeddings[seq_start:seq_start + num_atoms_in_relation]
+            
+            # Extract object messages (skip predicate at position 0)
+            object_messages = relation_transformed[:, 1:arity+1, :]  # [num_atoms, arity, embedding_size]
             object_messages = object_messages.reshape(-1, self._embedding_size)  # [num_atoms * arity, embedding_size]
             
             # Add residual connection with original object embeddings
-            original_object_embeddings = object_embeddings.reshape(-1, self._embedding_size)
+            original_object_embeddings = relation_original_embeddings[i].reshape(-1, self._embedding_size)
             final_messages = object_messages + original_object_embeddings
             
             output_messages_list.append(final_messages)
-            output_indices_list.append(atom_indices.flatten())
+            seq_start += num_atoms_in_relation
         
         # Concatenate all messages and indices
-        if output_messages_list:
-            output_messages = torch.cat(output_messages_list, 0)
-            output_indices = torch.cat(output_indices_list, 0)
-        else:
-            device = node_embeddings.device
-            output_messages = torch.empty(0, self._embedding_size, device=device)
-            output_indices = torch.empty(0, dtype=torch.long, device=device)
+        output_messages = torch.cat(output_messages_list, 0)
+        output_indices = batched_indices
             
         return output_messages, output_indices
