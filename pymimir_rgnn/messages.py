@@ -15,7 +15,7 @@ class PredicateMLPMessages(MessageFunction):
     """
 
     def __init__(self,
-                 config: HyperparameterConfig,
+                 hparam_config: HyperparameterConfig,
                  input_spec: tuple[Encoder, ...]):
         """Initialize the predicate MLP message function.
 
@@ -24,12 +24,12 @@ class PredicateMLPMessages(MessageFunction):
             input_spec: The input specification to determine which relations exist.
         """
         super().__init__()
-        self._embedding_size = config.embedding_size
+        self._embedding_size = hparam_config.embedding_size
         self._relation_mlps = nn.ModuleDict()
-        relations = get_relations_from_encoders(config.domain, input_spec)
+        relations = get_relations_from_encoders(hparam_config.domain, input_spec)
         for relation_name, relation_arity in relations:
-            input_size = relation_arity * config.embedding_size
-            output_size = relation_arity * config.embedding_size
+            input_size = relation_arity * hparam_config.embedding_size
+            output_size = relation_arity * hparam_config.embedding_size
             if (input_size > 0) and (output_size > 0):
                 self._relation_mlps[relation_name] = MLP(input_size, output_size)
 

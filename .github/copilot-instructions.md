@@ -51,32 +51,32 @@ pip install -e .[dev]
    import pymimir as mm
    import pymimir_rgnn as rgnn
    from pathlib import Path
-   
+
    # Test with blocks domain
    test_dir = Path('tests/data')
    domain = mm.Domain(test_dir / 'blocks' / 'domain.pddl')
    problem = mm.Problem(domain, test_dir / 'blocks' / 'problem.pddl')
-   
+
    hparam_config = rgnn.HyperparameterConfig(
        domain=domain,
        embedding_size=32,
        num_layers=3,
    )
-   
+
    input_spec = (rgnn.StateEncoder(), rgnn.GroundActionsEncoder(), rgnn.GoalEncoder())
    output_spec = [('q_values', rgnn.ActionScalarDecoder(hparam_config))]
-   
+
    module_config = rgnn.ModuleConfig(
        aggregation_function=rgnn.MeanAggregation(),
        message_function=rgnn.PredicateMLPMessages(hparam_config, input_spec),
        update_function=rgnn.MLPUpdates(hparam_config)
    )
-   
+
    model = rgnn.RelationalGraphNeuralNetwork(hparam_config, module_config, input_spec, output_spec)
    initial_state = problem.get_initial_state()
    initial_actions = initial_state.generate_applicable_actions()
    goal = problem.get_goal_condition()
-   
+
    output = model.forward([(initial_state, initial_actions, goal)])
    q_values = output.readout('q_values')
    print(f"✓ Got Q-values for {len(q_values[0])} actions")
@@ -91,7 +91,7 @@ pip install -e .[dev]
 Always run before finishing changes:
 ```bash
 python -m pytest tests/ -v     # Takes 3 seconds
-mypy pymimir_rgnn/            # Takes 16 seconds  
+mypy pymimir_rgnn/            # Takes 16 seconds
 ```
 
 ### Key Design Principles
@@ -118,7 +118,7 @@ mimir-rgnn/
 ├── tests/                  # Test suite - 22 parameterized tests
 │   ├── data/              # Test PDDL domains (blocks, gripper)
 │   │   ├── blocks/        # Blocksworld domain and problem
-│   │   └── gripper/       # Gripper domain and problem  
+│   │   └── gripper/       # Gripper domain and problem
 │   └── test_model.py      # Model tests with extensive parametrization
 ├── .github/workflows/     # CI/CD workflows (test.yml, mypy.yml, publish.yml)
 ├── pyproject.toml         # Project configuration and dependencies
@@ -138,7 +138,7 @@ class HyperparameterConfig:
     num_layers: int = field(default=3, metadata={'doc': 'Number of message passing layers.'})
     # ... other configuration fields
 
-@dataclass  
+@dataclass
 class ModuleConfig:
     aggregation_function: AggregationFunction = field(metadata={'doc': 'Message aggregation function.'})
     message_function: MessageFunction = field(metadata={'doc': 'Message computation function.'})
@@ -157,14 +157,14 @@ The encoding system transforms PDDL structures into graph neural network inputs 
 
 **Encoder Classes**:
 - `StateEncoder()`: Current planning state
-- `GoalEncoder()`: Goal specification  
+- `GoalEncoder()`: Goal specification
 - `GroundActionsEncoder()`: Available actions
 - `TransitionEffectsEncoder()`: Action effects
 
 **Decoder Classes**:
 - `ActionScalarDecoder(config)`: Scalar values over actions
 - `ActionEmbeddingDecoder()`: Embeddings over actions
-- `ObjectsScalarDecoder(config)`: Scalar values over objects  
+- `ObjectsScalarDecoder(config)`: Scalar values over objects
 - `ObjectsEmbeddingDecoder()`: Embeddings over objects
 
 **Critical Functions**:
@@ -184,7 +184,7 @@ Standard PyTorch modules following library conventions:
 
 **Aggregation Functions**:
 - `MeanAggregation()`: Mean aggregation
-- `SumAggregation()`: Sum aggregation  
+- `SumAggregation()`: Sum aggregation
 - `HardMaximumAggregation()`: Hard maximum
 - `SmoothMaximumAggregation()`: Smooth maximum (LogSumExp)
 
@@ -203,13 +203,13 @@ The `RelationalGraphNeuralNetwork` class:
 ```python
 # ✅ Correct - fully typed
 def encode_input(
-    input: list[tuple], 
-    input_specification: tuple[Encoder, ...], 
+    input: list[tuple],
+    input_specification: tuple[Encoder, ...],
     device: torch.device
 ) -> EncodedTensors:
     """Process planning instances into tensor format."""
 
-# ❌ Wrong - missing types  
+# ❌ Wrong - missing types
 def encode_input(input, input_specification, device):
     """Process planning instances into tensor format."""
 ```
@@ -223,7 +223,7 @@ class MyConfig:
     required_param: str = field(
         metadata={'doc': 'Required parameter description.'}
     )
-    
+
     optional_param: int = field(
         default=42,
         metadata={'doc': 'Optional parameter with default.'}
@@ -239,16 +239,16 @@ class CustomEncoder(Encoder):
         relations = super().get_relations(domain) if hasattr(super(), 'get_relations') else []
         relations.append(("custom_relation", 2))
         return relations
-    
+
     def encode(self, input_value: Any, intermediate: EncodedLists, state: mm.State) -> int:
         # Custom encoding implementation
         return nodes_added
 
 class CustomDecoder(Decoder):
-    def __init__(self, config: HyperparameterConfig):
+    def __init__(self, hparam_config: HyperparameterConfig):
         super().__init__()
-        self._readout = MLP(config.embedding_size, 1)
-    
+        self._readout = MLP(hparam_config.embedding_size, 1)
+
     def forward(self, node_embeddings: torch.Tensor, input: EncodedTensors) -> torch.Tensor:
         # Direct readout implementation
         return self._readout(node_embeddings)
@@ -265,7 +265,7 @@ Use pytest parametrization for comprehensive testing:
     ('blocks', HardMaximumAggregation(), 2, 32),
     ('gripper', MeanAggregation(), 4, 64),
 ])
-def test_model_configuration(domain: str, aggregation: AggregationFunction, 
+def test_model_configuration(domain: str, aggregation: AggregationFunction,
                            layers: int, embedding_size: int):
     """Test various model configurations."""
 ```
@@ -418,14 +418,14 @@ Use Google-style docstrings for all public interfaces:
 ```python
 def complex_function(param1: str, param2: int) -> Dict[str, Any]:
     """Brief description of function purpose.
-    
+
     Args:
         param1: Description of first parameter.
         param2: Description of second parameter.
-        
+
     Returns:
         Dictionary containing processed results.
-        
+
     Raises:
         ValueError: If param1 is empty string.
     """
@@ -440,7 +440,7 @@ def complex_function(param1: str, param2: int) -> Dict[str, Any]:
 
 ### Common Debug Scenarios
 - **Shape mismatches**: Check tensor dimensions in forward pass
-- **Device errors**: Ensure all tensors on same device  
+- **Device errors**: Ensure all tensors on same device
 - **Type errors**: Validate Mimir object types before processing
 - **Configuration errors**: Validate input specifications are consistent
 

@@ -13,14 +13,14 @@ class MLPUpdates(UpdateFunction):
     a learnable way to combine the node's current state with incoming information.
     """
 
-    def __init__(self, config: HyperparameterConfig):
+    def __init__(self, hparam_config: HyperparameterConfig):
         """Initialize the MLP update function.
 
         Args:
             config: The hyperparameter configuration containing embedding sizes.
         """
         super().__init__()
-        self._update = MLP(2 * config.embedding_size, config.embedding_size)
+        self._update = MLP(2 * hparam_config.embedding_size, hparam_config.embedding_size)
 
     def forward(self, node_embeddings: torch.Tensor, aggregated_messages: torch.Tensor) -> torch.Tensor:
         """Update node embeddings using the MLP.

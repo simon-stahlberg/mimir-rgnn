@@ -14,15 +14,15 @@ class ActionScalarDecoder(Decoder):
     preferences in reinforcement learning applications.
     """
 
-    def __init__(self, config: 'HyperparameterConfig'):
+    def __init__(self, hparam_config: 'HyperparameterConfig'):
         """Initialize the action scalar decoder.
 
         Args:
             config: The hyperparameter configuration containing embedding sizes.
         """
         super().__init__()
-        self._object_readout = SumReadout(config.embedding_size, config.embedding_size)
-        self._action_value = MLP(2 * config.embedding_size, 1)
+        self._object_readout = SumReadout(hparam_config.embedding_size, hparam_config.embedding_size)
+        self._action_value = MLP(2 * hparam_config.embedding_size, 1)
 
     def forward(self, node_embeddings: torch.Tensor, encoding: 'EncodedTensors') -> list[torch.Tensor]:
         """Compute scalar values for each action.
@@ -72,14 +72,14 @@ class ObjectsScalarDecoder(Decoder):
     estimation or global state assessment.
     """
 
-    def __init__(self, config: 'HyperparameterConfig'):
+    def __init__(self, hparam_config: 'HyperparameterConfig'):
         """Initialize the objects scalar decoder.
 
         Args:
             config: The hyperparameter configuration containing embedding sizes.
         """
         super().__init__()
-        self._object_readout = SumReadout(config.embedding_size, 1)
+        self._object_readout = SumReadout(hparam_config.embedding_size, 1)
 
     def forward(self, node_embeddings: torch.Tensor, encoding: 'EncodedTensors') -> torch.Tensor:
         """Compute scalar values by aggregating object embeddings.
