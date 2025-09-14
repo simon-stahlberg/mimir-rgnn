@@ -6,7 +6,7 @@ from dataclasses import fields
 from pathlib import Path
 from typing import Any, Callable, Union
 
-from .bases import Encoder, MessageFunction
+from .bases import Encoder
 from .configs import HyperparameterConfig, ModuleConfig
 from .decoders import Decoder
 from .encoders import EncodedTensors, get_input_from_encoders
