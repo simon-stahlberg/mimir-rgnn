@@ -109,14 +109,14 @@ class AttentionMessages(MessageFunction):
         # TransformerEncoderLayer for parallel message computation
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=hparam_config.embedding_size,
-            nhead=4,  # Standard choice
-            dim_feedforward=hparam_config.embedding_size * 4,  # Standard multiplier
-            activation='gelu',
+            nhead=8,
+            dim_feedforward=hparam_config.embedding_size,
+            activation='relu',
             batch_first=True,
             dropout=0.0,
             layer_norm_eps=0.0
         )
-        self._transformer = nn.TransformerEncoder(encoder_layer, num_layers=4)
+        self._transformer = nn.TransformerEncoder(encoder_layer, num_layers=2)
 
     def setup(self, relations: dict[str, torch.Tensor]) -> None:
         """Pre-compute static parts that don't change across layers.

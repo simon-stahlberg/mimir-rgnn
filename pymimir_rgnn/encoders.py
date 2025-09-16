@@ -15,6 +15,16 @@ class StateEncoder(Encoder):
     Objects become nodes, and atoms become relations between objects.
     """
 
+    def __init__(self, suffix: str = '') -> None:
+        """Initialize the state encoder.
+
+        Args:
+            suffix: Optional suffix to append to relation names to avoid conflicts.
+        """
+        super().__init__()
+        assert isinstance(suffix, str), 'Suffix must be a string.'
+        self.suffix = suffix
+
     def get_relations(self, domain: mm.Domain) -> list[tuple[str, int]]:
         """Get relations that this encoder will add for state atoms.
 
@@ -26,7 +36,7 @@ class StateEncoder(Encoder):
         """
         ignored_predicate_names = ['number']
         predicates = [predicate for predicate in domain.get_predicates() if not predicate.get_name() in ignored_predicate_names]
-        return [(get_predicate_name(predicate, False, True), predicate.get_arity()) for predicate in predicates]
+        return [(get_predicate_name(predicate, False, True, self.suffix), predicate.get_arity()) for predicate in predicates]
 
     def encode(self, input_value: Any, encoding: 'EncodedLists', state: mm.State) -> int:
         """Encode a planning state into the intermediate representation.
@@ -67,7 +77,7 @@ class StateEncoder(Encoder):
             is_goal_atom: Whether this atom is part of the goal condition.
             intermediate: The intermediate encoding to update.
         """
-        relation_name = get_atom_name(atom, state, is_goal_atom)
+        relation_name = get_atom_name(atom, state, is_goal_atom, self.suffix)
         object_indices: list[int] = [term.get_index() + intermediate.node_count for term in atom.get_terms()]
         if relation_name not in intermediate.flattened_relations:
             intermediate.flattened_relations[relation_name] = object_indices
@@ -84,6 +94,16 @@ class GoalEncoder(Encoder):
     in the current state relative to the goal.
     """
 
+    def __init__(self, suffix: str = '') -> None:
+        """Initialize the goal encoder.
+
+        Args:
+            suffix: Suffix to append to relation names to avoid conflicts.
+        """
+        super().__init__()
+        assert isinstance(suffix, str), 'Suffix must be a string.'
+        self.suffix = suffix
+
     def get_relations(self, domain: mm.Domain) -> list[tuple[str, int]]:
         """Get relations that this encoder will add for goal conditions.
 
@@ -97,8 +117,8 @@ class GoalEncoder(Encoder):
         ignored_predicate_names = ['number']
         predicates = [predicate for predicate in domain.get_predicates() if not predicate.get_name() in ignored_predicate_names]
         relations = []
-        relations.extend([(get_predicate_name(predicate, True, False), predicate.get_arity()) for predicate in predicates])
-        relations.extend([(get_predicate_name(predicate, True, True), predicate.get_arity()) for predicate in predicates])
+        relations.extend([(get_predicate_name(predicate, True, False, self.suffix), predicate.get_arity()) for predicate in predicates])
+        relations.extend([(get_predicate_name(predicate, True, True, self.suffix), predicate.get_arity()) for predicate in predicates])
         return relations
 
     def encode(self, input_value: Any, encoding: 'EncodedLists', state: mm.State) -> int:
@@ -133,7 +153,7 @@ class GoalEncoder(Encoder):
             is_goal_atom: Whether this atom is part of the goal condition.
             intermediate: The intermediate encoding to update.
         """
-        relation_name = get_atom_name(atom, state, is_goal_atom)
+        relation_name = get_atom_name(atom, state, is_goal_atom, self.suffix)
         object_indices: list[int] = [term.get_index() + intermediate.node_count for term in atom.get_terms()]
         if relation_name not in intermediate.flattened_relations:
             intermediate.flattened_relations[relation_name] = object_indices
@@ -149,6 +169,16 @@ class GroundActionsEncoder(Encoder):
     and relations connect actions to their parameter objects.
     """
 
+    def __init__(self, suffix: str = '') -> None:
+        """Initialize the ground actions encoder.
+
+        Args:
+            suffix: Optional suffix to append to relation names to avoid conflicts.
+        """
+        super().__init__()
+        assert isinstance(suffix, str), 'Suffix must be a string.'
+        self.suffix = suffix
+
     def get_relations(self, domain: mm.Domain) -> list[tuple[str, int]]:
         """Get relations that this encoder will add for actions.
 
@@ -159,7 +189,7 @@ class GroundActionsEncoder(Encoder):
             List of (relation_name, arity) pairs for all actions, where arity
             is the action's parameter count plus 1 (for the action node itself).
         """
-        return [(get_action_name(action), action.get_arity() + 1) for action in domain.get_actions()]
+        return [(get_action_name(action, self.suffix), action.get_arity() + 1) for action in domain.get_actions()]
 
     def encode(self, input_value: Any, encoding: 'EncodedLists', state: mm.State) -> int:
         """Encode ground actions into the intermediate representation.
@@ -185,7 +215,7 @@ class GroundActionsEncoder(Encoder):
 
             problem = action.get_problem()
             num_objects = len(problem.get_objects())
-            relation_name = get_action_name(action)
+            relation_name = get_action_name(action, self.suffix)
             action_local_id = num_objects + action_index
             action_global_id = action_local_id + encoding.node_count
             term_ids = [action_global_id] + [term.get_index() + encoding.node_count for term in action.get_objects()]
@@ -211,6 +241,16 @@ class TransitionEffectsEncoder(Encoder):
     transition becomes a new node, with relations connecting it to affected atoms.
     """
 
+    def __init__(self, suffix: str = '') -> None:
+        """Initialize the transition effects encoder.
+
+        Args:
+            suffix: Optional suffix to append to relation names to avoid conflicts.
+        """
+        super().__init__()
+        assert isinstance(suffix, str), 'Suffix must be a string.'
+        self.suffix = suffix
+
     def get_relations(self, domain: mm.Domain) -> list[tuple[str, int]]:
         """Get relations that this encoder will add for transition effects.
 
@@ -224,11 +264,11 @@ class TransitionEffectsEncoder(Encoder):
         ignored_predicate_names = ['number']
         predicates = [predicate for predicate in domain.get_predicates() if not predicate.get_name() in ignored_predicate_names]
         relations = []
-        relations.extend([(get_effect_name(predicate, True, False), predicate.get_arity() + 1) for predicate in predicates])
-        relations.extend([(get_effect_name(predicate, False, False), predicate.get_arity() + 1) for predicate in predicates])
-        relations.extend([(get_effect_name(predicate, True, True), predicate.get_arity() + 1) for predicate in predicates])
-        relations.extend([(get_effect_name(predicate, False, True), predicate.get_arity() + 1) for predicate in predicates])
-        relations.append((get_effect_relation_name(), 2))
+        relations.extend([(get_effect_name(predicate, True, False, self.suffix), predicate.get_arity() + 1) for predicate in predicates])
+        relations.extend([(get_effect_name(predicate, False, False, self.suffix), predicate.get_arity() + 1) for predicate in predicates])
+        relations.extend([(get_effect_name(predicate, True, True, self.suffix), predicate.get_arity() + 1) for predicate in predicates])
+        relations.extend([(get_effect_name(predicate, False, True, self.suffix), predicate.get_arity() + 1) for predicate in predicates])
+        relations.append((get_effect_relation_name(self.suffix), 2))
         return relations
 
     def encode(self, input_value: Any, encoding: 'EncodedLists', state: mm.State) -> int:
@@ -260,7 +300,7 @@ class TransitionEffectsEncoder(Encoder):
 
             for effect in effects:
                 assert isinstance(effect, mm.GroundLiteral), 'Expected a list of lists of ground literals.'
-                effect_name = get_effect_name(effect.get_atom().get_predicate(), effect.get_polarity(), False)
+                effect_name = get_effect_name(effect.get_atom().get_predicate(), effect.get_polarity(), False, self.suffix)
                 term_ids = [transition_global_id] + [term.get_index() + encoding.node_count for term in effect.get_atom().get_terms()]
 
                 if effect_name not in encoding.flattened_relations:
@@ -270,7 +310,7 @@ class TransitionEffectsEncoder(Encoder):
 
                 # Add literals stating how this transition affects the goal
                 if any(x == effect.get_atom() for x in goal_condition):
-                    goal_effect_name = get_effect_name(effect.get_atom().get_predicate(), effect.get_polarity(), True)
+                    goal_effect_name = get_effect_name(effect.get_atom().get_predicate(), effect.get_polarity(), True, self.suffix)
                     goal_term_ids = [transition_global_id] + [term.get_index() + encoding.node_count for term in effect.get_atom().get_terms()]
 
                     if goal_effect_name not in encoding.flattened_relations:

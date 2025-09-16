@@ -30,7 +30,7 @@ class MeanAggregation(AggregationFunction):
         cnt_msg = torch.zeros_like(node_embeddings)
         sum_msg.index_add_(0, indices, messages)
         cnt_msg.index_add_(0, indices, torch.ones_like(messages))
-        avg_msg = sum_msg / cnt_msg
+        avg_msg = sum_msg / (cnt_msg + 1E-16)  # Avoid division by zero
         return avg_msg
 
 
@@ -85,7 +85,7 @@ class HardMaximumAggregation(AggregationFunction):
         Returns:
             Aggregated messages with the same shape as node_embeddings.
         """
-        max_msg = torch.full_like(node_embeddings, float('-inf')) # include_self=False leads to an error for some reason. Use -inf to get the same result.
+        max_msg = torch.full_like(node_embeddings, float('-inf'))  # include_self=False leads to an error for some reason. Use -inf to get the same result.
         max_msg.index_reduce_(0, indices, messages, reduce='amax', include_self=True)
         return max_msg
 
