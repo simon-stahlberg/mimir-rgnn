@@ -266,20 +266,18 @@ class RelationalGraphNeuralNetwork(nn.Module):
         """
         return self._dummy.device
 
-    def forward(self, x: list[tuple]) -> ForwardState:  # type: ignore
-        """Perform a forward pass through the R-GNN.
+    def _run_neural_computation(self, input: 'EncodedTensors') -> ForwardState:
+        """Run the neural network computation phase of the forward pass.
+
+        This private method contains the shared logic for running the MPNN forward pass
+        and creating the final ForwardState with readout functions.
 
         Args:
-            x: List of input tuples, where each tuple contains the inputs specified
-               by the input_spec (e.g., state, goal, actions).
+            input: The encoded tensors from the input encoders.
 
         Returns:
-            ForwardState object containing the final layer index and readout functions
-            for extracting outputs.
+            ForwardState object containing the final layer index and readout functions.
         """
-        # Create input using encoder-based specification
-        assert isinstance(x, list), 'Expected input to be a list.'
-        input = get_input_from_encoders(x, self._input_spec, self.get_device())
         # Pass the input through the MPNN module
         if len(self._hooks) > 0:
             def hook_function(layer_index: 'int', node_embeddings: 'torch.Tensor') -> 'None':
@@ -297,6 +295,23 @@ class RelationalGraphNeuralNetwork(nn.Module):
             return lambda: readout(node_embeddings, input)
         curried_readouts = { name: make_readout_func(readout) for name, readout in self._readouts.items() }
         return ForwardState(self._hparam_config.num_layers - 1, curried_readouts)
+
+    def forward(self, x: list[tuple]) -> ForwardState:  # type: ignore
+        """Perform a forward pass through the R-GNN.
+
+        Args:
+            x: List of input tuples, where each tuple contains the inputs specified
+               by the input_spec (e.g., state, goal, actions).
+
+        Returns:
+            ForwardState object containing the final layer index and readout functions
+            for extracting outputs.
+        """
+        # Create input using encoder-based specification
+        assert isinstance(x, list), 'Expected input to be a list.'
+        input = get_input_from_encoders(x, self._input_spec, self.get_device())
+        # Run the neural computation
+        return self._run_neural_computation(input)
 
     def curry_forward(self, x: list[tuple]) -> Callable[[], ForwardState]:
         """Return a lambda that performs a forward pass through the R-GNN.
@@ -318,23 +333,8 @@ class RelationalGraphNeuralNetwork(nn.Module):
         input = get_input_from_encoders(x, self._input_spec, self.get_device())
         
         def curried_forward() -> ForwardState:
-            # Pass the input through the MPNN module - this is delayed
-            if len(self._hooks) > 0:
-                def hook_function(layer_index: 'int', node_embeddings: 'torch.Tensor') -> 'None':
-                    nonlocal self, input
-                    def make_readout_func(readout: Any) -> Callable[[], Any]:
-                        return lambda: readout(node_embeddings, input)
-                    curried_readouts = { name: make_readout_func(readout) for name, readout in self._readouts.items() }
-                    forward_state = ForwardState(layer_index, curried_readouts)
-                    self._notify_hooks(forward_state)
-                self._mpnn_module.add_hook(hook_function)
-            node_embeddings = self._mpnn_module.forward(input)
-            if len(self._hooks) > 0:
-                self._mpnn_module.clear_hooks()
-            def make_readout_func(readout: Any) -> Callable[[], Any]:
-                return lambda: readout(node_embeddings, input)
-            curried_readouts = { name: make_readout_func(readout) for name, readout in self._readouts.items() }
-            return ForwardState(self._hparam_config.num_layers - 1, curried_readouts)
+            # Run the neural computation - this is delayed
+            return self._run_neural_computation(input)
         
         return curried_forward
 
