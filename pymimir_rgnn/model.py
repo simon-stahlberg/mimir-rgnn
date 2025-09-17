@@ -298,6 +298,46 @@ class RelationalGraphNeuralNetwork(nn.Module):
         curried_readouts = { name: make_readout_func(readout) for name, readout in self._readouts.items() }
         return ForwardState(self._hparam_config.num_layers - 1, curried_readouts)
 
+    def curry_forward(self, x: list[tuple]) -> Callable[[], ForwardState]:
+        """Return a lambda that performs a forward pass through the R-GNN.
+
+        This method precomputes the encoded tensors but delays the MPNN computation
+        until the returned lambda is called. This is equivalent to model.forward(x)
+        but allows for separating the encoding phase from the neural network computation.
+
+        Args:
+            x: List of input tuples, where each tuple contains the inputs specified
+               by the input_spec (e.g., state, goal, actions).
+
+        Returns:
+            A lambda function that when called returns a ForwardState object containing 
+            the final layer index and readout functions for extracting outputs.
+        """
+        # Create input using encoder-based specification - this is precomputed
+        assert isinstance(x, list), 'Expected input to be a list.'
+        input = get_input_from_encoders(x, self._input_spec, self.get_device())
+        
+        def curried_forward() -> ForwardState:
+            # Pass the input through the MPNN module - this is delayed
+            if len(self._hooks) > 0:
+                def hook_function(layer_index: 'int', node_embeddings: 'torch.Tensor') -> 'None':
+                    nonlocal self, input
+                    def make_readout_func(readout: Any) -> Callable[[], Any]:
+                        return lambda: readout(node_embeddings, input)
+                    curried_readouts = { name: make_readout_func(readout) for name, readout in self._readouts.items() }
+                    forward_state = ForwardState(layer_index, curried_readouts)
+                    self._notify_hooks(forward_state)
+                self._mpnn_module.add_hook(hook_function)
+            node_embeddings = self._mpnn_module.forward(input)
+            if len(self._hooks) > 0:
+                self._mpnn_module.clear_hooks()
+            def make_readout_func(readout: Any) -> Callable[[], Any]:
+                return lambda: readout(node_embeddings, input)
+            curried_readouts = { name: make_readout_func(readout) for name, readout in self._readouts.items() }
+            return ForwardState(self._hparam_config.num_layers - 1, curried_readouts)
+        
+        return curried_forward
+
     def clone(self) -> 'RelationalGraphNeuralNetwork':
         """Create a deep copy of the model with identical weights and configuration.
 

@@ -362,3 +362,69 @@ def test_attention_messages(domain_name: str):
     # Check that we get valid tensors
     assert all(isinstance(val, torch.Tensor) for val in q_values[0])
     assert all(val.numel() == 1 for val in q_values[0])  # Each should be a scalar
+
+
+@pytest.mark.parametrize("domain_name", [('blocks'), ('gripper')])
+def test_curry_forward(domain_name: str):
+    """Test that curry_forward is equivalent to forward but allows separated computation."""
+    domain_path = DATA_DIR / domain_name / 'domain.pddl'
+    problem_path = DATA_DIR / domain_name / 'problem.pddl'
+    domain = mm.Domain(domain_path)
+    problem = mm.Problem(domain, problem_path)
+    
+    # Setup model
+    hparam_config = HyperparameterConfig(
+        domain=domain,
+        num_layers=3,
+        embedding_size=8
+    )
+    input_spec = (StateEncoder(), GroundActionsEncoder(), GoalEncoder())
+    output_spec = [('q_values', ActionScalarDecoder(hparam_config))]
+    module_config = ModuleConfig(
+        aggregation_function=MeanAggregation(),
+        message_function=PredicateMLPMessages(hparam_config, input_spec),
+        update_function=MLPUpdates(hparam_config)
+    )
+    model = RelationalGraphNeuralNetwork(hparam_config, module_config, input_spec, output_spec)  # type: ignore
+
+    # Prepare input data
+    initial_state = problem.get_initial_state()
+    goal_condition = problem.get_goal_condition()
+    ground_actions = initial_state.generate_applicable_actions()
+    input_data = [(initial_state, ground_actions, goal_condition)]
+
+    # Test 1: Verify curry_forward returns a callable
+    curried_func = model.curry_forward(input_data)
+    assert callable(curried_func), "curry_forward should return a callable"
+
+    # Test 2: Verify equivalence - model.forward(x) == model.curry_forward(x)()
+    direct_result = model.forward(input_data)
+    curried_result = curried_func()
+
+    # Both should return ForwardState objects
+    assert isinstance(direct_result, ForwardState), "forward should return ForwardState"
+    assert isinstance(curried_result, ForwardState), "curry_forward() should return ForwardState"
+
+    # Layer indices should match
+    assert direct_result.get_layer_index() == curried_result.get_layer_index()
+
+    # Readouts should produce equivalent results
+    direct_q_values = direct_result.readout('q_values')
+    curried_q_values = curried_result.readout('q_values')
+
+    assert isinstance(direct_q_values, list)
+    assert isinstance(curried_q_values, list)
+    assert len(direct_q_values) == len(curried_q_values)
+    assert len(direct_q_values[0]) == len(curried_q_values[0])
+
+    # Values should be close (allowing for small numerical differences)
+    for direct_val, curried_val in zip(direct_q_values[0], curried_q_values[0]):
+        assert torch.allclose(direct_val, curried_val, atol=1e-6)
+
+    # Test 3: Verify that the curried function can be called multiple times
+    curried_result_2 = curried_func()
+    curried_q_values_2 = curried_result_2.readout('q_values')
+    
+    # Should produce the same results
+    for val1, val2 in zip(curried_q_values[0], curried_q_values_2[0]):
+        assert torch.allclose(val1, val2, atol=1e-6)
