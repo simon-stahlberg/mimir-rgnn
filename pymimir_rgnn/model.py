@@ -266,7 +266,7 @@ class RelationalGraphNeuralNetwork(nn.Module):
         """
         return self._dummy.device
 
-    def _run_neural_computation(self, input: 'EncodedTensors') -> ForwardState:
+    def _internal_forward(self, input: 'EncodedTensors') -> ForwardState:
         """Run the neural network computation phase of the forward pass.
 
         This private method contains the shared logic for running the MPNN forward pass
@@ -307,11 +307,9 @@ class RelationalGraphNeuralNetwork(nn.Module):
             ForwardState object containing the final layer index and readout functions
             for extracting outputs.
         """
-        # Create input using encoder-based specification
         assert isinstance(x, list), 'Expected input to be a list.'
         input = get_input_from_encoders(x, self._input_spec, self.get_device())
-        # Run the neural computation
-        return self._run_neural_computation(input)
+        return self._internal_forward(input)
 
     def curry_forward(self, x: list[tuple]) -> Callable[[], ForwardState]:
         """Return a lambda that performs a forward pass through the R-GNN.
@@ -325,17 +323,16 @@ class RelationalGraphNeuralNetwork(nn.Module):
                by the input_spec (e.g., state, goal, actions).
 
         Returns:
-            A lambda function that when called returns a ForwardState object containing 
+            A lambda function that when called returns a ForwardState object containing
             the final layer index and readout functions for extracting outputs.
         """
-        # Create input using encoder-based specification - this is precomputed
         assert isinstance(x, list), 'Expected input to be a list.'
         input = get_input_from_encoders(x, self._input_spec, self.get_device())
-        
+
+        # Define a curried function that captures the input and runs the internal forward pass.
         def curried_forward() -> ForwardState:
-            # Run the neural computation - this is delayed
-            return self._run_neural_computation(input)
-        
+            return self._internal_forward(input)
+
         return curried_forward
 
     def clone(self) -> 'RelationalGraphNeuralNetwork':

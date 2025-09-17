@@ -335,11 +335,12 @@ def get_relations_from_encoders(domain: mm.Domain, input_specification: tuple[En
     Returns:
         Sorted list of (relation_name, arity) pairs from all encoders.
     """
-    relations: list[tuple[str, int]] = []
+    relations_set: list[tuple[str, int]] = []
     for encoder in input_specification:
-        relations.extend(encoder.get_relations(domain))
-    relations.sort()  # Ensure that the output is deterministic.
-    return relations
+        relations_set.extend(encoder.get_relations(domain))
+    relations_list = list(relations_set)
+    relations_list.sort()  # Ensure that the output is deterministic.
+    return relations_list
 
 
 def get_input_from_encoders(input: list[tuple], input_specification: tuple[Encoder, ...], device: torch.device) -> EncodedTensors:
