@@ -285,18 +285,27 @@ class TransitionEffectsEncoder(Encoder):
         Raises:
             AssertionError: If input format is incorrect.
         """
-        assert isinstance(input_value, list), f'TransitionEffectsEncoder expected a list, got {type(input_value)}'
+        if isinstance(input_value, tuple):
+            effects_list = input_value[0]
+            effects_relations = input_value[1]
+        elif isinstance(input_value, list):
+            effects_list = input_value
+            effects_relations = []
+        else:
+            raise AssertionError(f'TransitionEffectsEncoder expected a list or tuple, got {type(input_value)}')
 
-        effects_list = input_value
         problem = state.get_problem()
         goal_condition = problem.get_goal_condition()
         num_objects = len(problem.get_objects())
         num_transitions = len(effects_list)
 
+        transition_index_to_global_id: dict[int, int] = dict()
+
         for transition_index, effects in enumerate(effects_list):
-            assert isinstance(effects, list), 'Expected a list of lists of ground literals.'
+            assert isinstance(effects, list) or isinstance(effects, tuple), 'Expected a list of lists of ground literals.'
             transition_local_id = num_objects + transition_index
             transition_global_id = transition_local_id + encoding.node_count
+            transition_index_to_global_id[transition_index] = transition_global_id
 
             for effect in effects:
                 assert isinstance(effect, mm.GroundLiteral), 'Expected a list of lists of ground literals.'
@@ -320,6 +329,21 @@ class TransitionEffectsEncoder(Encoder):
 
             # Each transition adds a new node, remember the id
             encoding.action_indices.append(transition_global_id)
+
+        # Add relations between transitions if provided
+        for from_index, to_index in effects_relations:
+            assert isinstance(from_index, int) and isinstance(to_index, int), 'Effect relations must be pairs of integers.'
+            assert from_index < len(effects_list), f'Invalid from_index {from_index} in effect relations.'
+            assert to_index < len(effects_list), f'Invalid to_index {to_index} in effect relations.'
+            from_id = transition_index_to_global_id[from_index]
+            to_id = transition_index_to_global_id[to_index]
+            effect_relation_name = get_effect_relation_name(self.suffix)
+            relation_ids = [from_id, to_id]
+
+            if effect_relation_name not in encoding.flattened_relations:
+                encoding.flattened_relations[effect_relation_name] = relation_ids
+            else:
+                encoding.flattened_relations[effect_relation_name].extend(relation_ids)
 
         encoding.action_sizes.append(num_transitions)
         return num_transitions
