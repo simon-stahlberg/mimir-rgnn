@@ -41,6 +41,40 @@ class EncodedTensors:
         self.action_indices: torch.Tensor = torch.LongTensor()
 
 
+class EncodingContext():
+    def __init__(self, problem: mm.Problem, id_offset: int) -> None:
+        self.problem = problem
+        self.id_offset = id_offset
+
+        # Map from object indices to global node IDs
+        objects = problem.get_objects() + problem.get_domain().get_constants()
+        self.object_index_to_id: dict[int, int] = { obj.get_index(): i + id_offset for i, obj in enumerate(objects) }
+        self.action_ids: list[int] = []
+
+    def get_object_id(self, object_index: int) -> int:
+        return self.object_index_to_id[object_index]
+
+    def new_action_id(self) -> int:
+        action_id = self.id_offset + len(self.object_index_to_id) + len(self.action_ids)
+        self.action_ids.append(action_id)
+        return action_id
+
+    def get_object_ids(self) -> list[int]:
+        return list(self.object_index_to_id.values())
+
+    def get_object_count(self) -> int:
+        return len(self.object_index_to_id)
+
+    def get_action_ids(self) -> list[int]:
+        return self.action_ids
+
+    def get_action_count(self) -> int:
+        return len(self.action_ids)
+
+    def get_node_count(self) -> int:
+        return len(self.object_index_to_id) + len(self.action_ids)
+
+
 class Encoder(ABC):
     """Base class for encoders that transform PDDL structures into graph neural network inputs.
 
@@ -62,16 +96,14 @@ class Encoder(ABC):
         pass
 
     @abstractmethod
-    def encode(self, input_value: Any, encoding: 'EncodedLists', state: mm.State) -> int:
+    def encode(self, input_value: Any, state: mm.State, encoding: 'EncodedLists', context: 'EncodingContext') -> None:
         """Encode the input value into the intermediate graph representation.
 
         Args:
             input_value: The input data to encode (state, goal, actions, etc.).
-            encoding: The EncodedLists object to populate with graph structure.
             state: The current planning state for context.
-
-        Returns:
-            Number of nodes added to the graph by this encoder.
+            encoding: The EncodedLists object to populate with graph structure.
+            context: Context for tracking local additions to the encoding.
         """
         pass
 

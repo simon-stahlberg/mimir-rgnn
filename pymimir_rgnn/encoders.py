@@ -4,7 +4,7 @@ import torch
 from typing import Any
 
 from .utils import get_action_name, get_atom_name, get_effect_name, get_effect_relation_name, get_predicate_name, relations_to_tensors
-from .bases import Encoder, EncodedLists, EncodedTensors
+from .bases import Encoder, EncodedLists, EncodedTensors, EncodingContext
 
 
 class StateEncoder(Encoder):
@@ -38,7 +38,7 @@ class StateEncoder(Encoder):
         predicates = [predicate for predicate in domain.get_predicates() if not predicate.get_name() in ignored_predicate_names]
         return [(get_predicate_name(predicate, False, True, self.suffix), predicate.get_arity()) for predicate in predicates]
 
-    def encode(self, input_value: Any, encoding: 'EncodedLists', state: mm.State) -> int:
+    def encode(self, input_value: Any, state: mm.State, encoding: 'EncodedLists', context: 'EncodingContext') -> None:
         """Encode a planning state into the intermediate representation.
 
         Args:
@@ -54,35 +54,14 @@ class StateEncoder(Encoder):
         """
         assert isinstance(input_value, mm.State), f'StateEncoder expected a State, got {type(input_value)}'
 
-        problem = input_value.get_problem()
-        domain = problem.get_domain()
-        num_objects = len(problem.get_objects()) + len(domain.get_constants())
-
         # Add atom relations for all atoms in the state
         for atom in input_value.get_atoms():
-            self._add_atom_relation(atom, input_value, False, encoding)
-
-        # Track object indices
-        encoding.object_indices.extend(range(encoding.node_count, encoding.node_count + num_objects))
-        encoding.object_sizes.append(num_objects)
-
-        return num_objects
-
-    def _add_atom_relation(self, atom: mm.GroundAtom, state: mm.State, is_goal_atom: bool, intermediate: 'EncodedLists'):
-        """Add an atom relation to the intermediate representation.
-
-        Args:
-            atom: The ground atom to add as a relation.
-            state: The current planning state.
-            is_goal_atom: Whether this atom is part of the goal condition.
-            intermediate: The intermediate encoding to update.
-        """
-        relation_name = get_atom_name(atom, state, is_goal_atom, self.suffix)
-        object_indices: list[int] = [term.get_index() + intermediate.node_count for term in atom.get_terms()]
-        if relation_name not in intermediate.flattened_relations:
-            intermediate.flattened_relations[relation_name] = object_indices
-        else:
-            intermediate.flattened_relations[relation_name].extend(object_indices)
+            relation_name = get_atom_name(atom, state, False, self.suffix)
+            object_indices: list[int] = [context.get_object_id(obj.get_index()) for obj in atom.get_terms()]
+            if relation_name not in encoding.flattened_relations:
+                encoding.flattened_relations[relation_name] = object_indices
+            else:
+                encoding.flattened_relations[relation_name].extend(object_indices)
 
 
 class GoalEncoder(Encoder):
@@ -121,7 +100,7 @@ class GoalEncoder(Encoder):
         relations.extend([(get_predicate_name(predicate, True, True, self.suffix), predicate.get_arity()) for predicate in predicates])
         return relations
 
-    def encode(self, input_value: Any, encoding: 'EncodedLists', state: mm.State) -> int:
+    def encode(self, input_value: Any, state: mm.State, encoding: 'EncodedLists', context: 'EncodingContext') -> None:
         """Encode a goal condition into the intermediate representation.
 
         Args:
@@ -140,25 +119,14 @@ class GoalEncoder(Encoder):
         for literal in input_value:  # type: ignore
             assert isinstance(literal, mm.GroundLiteral), 'Goal condition should contain ground literals.'
             assert literal.get_polarity(), 'Only positive literals are supported.'
-            self._add_atom_relation(literal.get_atom(), state, True, encoding)
+            atom = literal.get_atom()
+            relation_name = get_atom_name(atom, state, True, self.suffix)
+            object_indices: list[int] = [context.get_object_id(obj.get_index()) for obj in atom.get_terms()]
+            if relation_name not in encoding.flattened_relations:
+                encoding.flattened_relations[relation_name] = object_indices
+            else:
+                encoding.flattened_relations[relation_name].extend(object_indices)
 
-        return 0  # Goals don't add new nodes, they just add relations
-
-    def _add_atom_relation(self, atom: mm.GroundAtom, state: mm.State, is_goal_atom: bool, intermediate: 'EncodedLists'):
-        """Add an atom relation to the intermediate representation.
-
-        Args:
-            atom: The ground atom to add as a relation.
-            state: The current planning state.
-            is_goal_atom: Whether this atom is part of the goal condition.
-            intermediate: The intermediate encoding to update.
-        """
-        relation_name = get_atom_name(atom, state, is_goal_atom, self.suffix)
-        object_indices: list[int] = [term.get_index() + intermediate.node_count for term in atom.get_terms()]
-        if relation_name not in intermediate.flattened_relations:
-            intermediate.flattened_relations[relation_name] = object_indices
-        else:
-            intermediate.flattened_relations[relation_name].extend(object_indices)
 
 
 class GroundActionsEncoder(Encoder):
@@ -191,7 +159,7 @@ class GroundActionsEncoder(Encoder):
         """
         return [(get_action_name(action, self.suffix), action.get_arity() + 1) for action in domain.get_actions()]
 
-    def encode(self, input_value: Any, encoding: 'EncodedLists', state: mm.State) -> int:
+    def encode(self, input_value: Any, state: mm.State, encoding: 'EncodedLists', context: 'EncodingContext') -> None:
         """Encode ground actions into the intermediate representation.
 
         Args:
@@ -207,30 +175,15 @@ class GroundActionsEncoder(Encoder):
         """
         assert isinstance(input_value, list), f'GroundActionsEncoder expected a list, got {type(input_value)}'
 
-        actions = input_value
-        num_actions = len(actions)
-
-        for action_index, action in enumerate(actions):
-            assert isinstance(action, mm.GroundAction), f'Expected a GroundAction in the list at position {action_index}'
-
-            problem = action.get_problem()
-            num_objects = len(problem.get_objects())
+        for action in input_value:
+            assert isinstance(action, mm.GroundAction), f'Expected a GroundAction in the list, got {type(action)}'
             relation_name = get_action_name(action, self.suffix)
-            action_local_id = num_objects + action_index
-            action_global_id = action_local_id + encoding.node_count
-            term_ids = [action_global_id] + [term.get_index() + encoding.node_count for term in action.get_objects()]
-
-            # Add to input relations
+            action_id = context.new_action_id()
+            term_ids = [action_id] + [context.get_object_id(obj.get_index()) for obj in action.get_objects()]
             if relation_name not in encoding.flattened_relations:
                 encoding.flattened_relations[relation_name] = term_ids
             else:
                 encoding.flattened_relations[relation_name].extend(term_ids)
-
-            # Each action adds a new node, remember the id
-            encoding.action_indices.append(action_global_id)
-
-        encoding.action_sizes.append(num_actions)
-        return num_actions
 
 
 class TransitionEffectsEncoder(Encoder):
@@ -271,7 +224,7 @@ class TransitionEffectsEncoder(Encoder):
         relations.append((get_effect_relation_name(self.suffix), 2))
         return relations
 
-    def encode(self, input_value: Any, encoding: 'EncodedLists', state: mm.State) -> int:
+    def encode(self, input_value: Any, state: mm.State, encoding: 'EncodedLists', context: 'EncodingContext') -> None:
         """Encode transition effects into the intermediate representation.
 
         Args:
@@ -296,47 +249,46 @@ class TransitionEffectsEncoder(Encoder):
 
         problem = state.get_problem()
         goal_condition = problem.get_goal_condition()
-        num_objects = len(problem.get_objects())
         num_transitions = len(effects_list)
 
-        transition_index_to_global_id: dict[int, int] = dict()
+        transition_index_to_id: dict[int, int] = dict()
 
         for transition_index, effects in enumerate(effects_list):
             assert isinstance(effects, list) or isinstance(effects, tuple), 'Expected a list of lists of ground literals.'
-            transition_local_id = num_objects + transition_index
-            transition_global_id = transition_local_id + encoding.node_count
-            transition_index_to_global_id[transition_index] = transition_global_id
+            transition_id = context.new_action_id()
+            transition_index_to_id[transition_index] = transition_id
 
-            for effect in effects:
-                assert isinstance(effect, mm.GroundLiteral), 'Expected a list of lists of ground literals.'
-                effect_name = get_effect_name(effect.get_atom().get_predicate(), effect.get_polarity(), False, self.suffix)
-                term_ids = [transition_global_id] + [term.get_index() + encoding.node_count for term in effect.get_atom().get_terms()]
+            for effect_literal in effects:
+                assert isinstance(effect_literal, mm.GroundLiteral), 'Expected a list of lists of ground literals.'
+                effect_atom = effect_literal.get_atom()
+                effect_name = get_effect_name(effect_atom.get_predicate(), effect_literal.get_polarity(), False, self.suffix)
+                object_ids = [transition_id] + [context.get_object_id(obj.get_index()) for obj in effect_atom.get_terms()]
 
                 if effect_name not in encoding.flattened_relations:
-                    encoding.flattened_relations[effect_name] = term_ids
+                    encoding.flattened_relations[effect_name] = object_ids
                 else:
-                    encoding.flattened_relations[effect_name].extend(term_ids)
+                    encoding.flattened_relations[effect_name].extend(object_ids)
 
                 # Add literals stating how this transition affects the goal
-                if any(x == effect.get_atom() for x in goal_condition):
-                    goal_effect_name = get_effect_name(effect.get_atom().get_predicate(), effect.get_polarity(), True, self.suffix)
-                    goal_term_ids = [transition_global_id] + [term.get_index() + encoding.node_count for term in effect.get_atom().get_terms()]
-
-                    if goal_effect_name not in encoding.flattened_relations:
-                        encoding.flattened_relations[goal_effect_name] = goal_term_ids
-                    else:
-                        encoding.flattened_relations[goal_effect_name].extend(goal_term_ids)
-
-            # Each transition adds a new node, remember the id
-            encoding.action_indices.append(transition_global_id)
+                for goal_literal in goal_condition:
+                    assert isinstance(goal_literal, mm.GroundLiteral), 'Goal condition should contain ground literals.'
+                    assert goal_literal.get_polarity(), 'Only positive literals are supported in the goal condition.'
+                    if effect_atom == goal_literal.get_atom():
+                        goal_effect_name = get_effect_name(effect_atom.get_predicate(), effect_literal.get_polarity(), True, self.suffix)
+                        goal_object_ids = [transition_id] + [context.get_object_id(obj.get_index()) for obj in effect_atom.get_terms()]
+                        if goal_effect_name not in encoding.flattened_relations:
+                            encoding.flattened_relations[goal_effect_name] = goal_object_ids
+                        else:
+                            encoding.flattened_relations[goal_effect_name].extend(goal_object_ids)
+                        break  # No need to check other goal literals
 
         # Add relations between transitions if provided
         for from_index, to_index in effects_relations:
             assert isinstance(from_index, int) and isinstance(to_index, int), 'Effect relations must be pairs of integers.'
-            assert from_index < len(effects_list), f'Invalid from_index {from_index} in effect relations.'
-            assert to_index < len(effects_list), f'Invalid to_index {to_index} in effect relations.'
-            from_id = transition_index_to_global_id[from_index]
-            to_id = transition_index_to_global_id[to_index]
+            assert from_index < num_transitions, f'Invalid from_index {from_index} in effect relations.'
+            assert to_index < num_transitions, f'Invalid to_index {to_index} in effect relations.'
+            from_id = transition_index_to_id[from_index]
+            to_id = transition_index_to_id[to_index]
             effect_relation_name = get_effect_relation_name(self.suffix)
             relation_ids = [from_id, to_id]
 
@@ -344,9 +296,6 @@ class TransitionEffectsEncoder(Encoder):
                 encoding.flattened_relations[effect_relation_name] = relation_ids
             else:
                 encoding.flattened_relations[effect_relation_name].extend(relation_ids)
-
-        encoding.action_sizes.append(num_transitions)
-        return num_transitions
 
 
 def get_relations_from_encoders(domain: mm.Domain, input_specification: tuple[Encoder, ...]) -> list[tuple[str, int]]:
@@ -388,7 +337,7 @@ def get_input_from_encoders(input: list[tuple], input_specification: tuple[Encod
         AssertionError: If input format doesn't match specification or if
                        no StateEncoder is found in the specification.
     """
-    intermediate = EncodedLists()
+    encoding_lists = EncodedLists()
 
     # Process each input instance
     for instance in input:
@@ -406,24 +355,28 @@ def get_input_from_encoders(input: list[tuple], input_specification: tuple[Encod
         assert state is not None, 'Input specification must contain a StateEncoder.'
 
         # Track nodes added for this instance
-        added_nodes = 0
+        context = EncodingContext(state.get_problem(), encoding_lists.node_count)
 
         # Process each encoder with its corresponding input value
         for encoder_index, encoder in enumerate(input_specification):
             input_value = instance[encoder_index]
-            nodes_added = encoder.encode(input_value, intermediate, state)
-            added_nodes += nodes_added
+            encoder.encode(input_value, state, encoding_lists, context)
 
-        intermediate.node_sizes.append(added_nodes)
-        intermediate.node_count += added_nodes
+        # Update global encoding with instance results
+        encoding_lists.object_indices.extend(context.get_object_ids())
+        encoding_lists.action_indices.extend(context.get_action_ids())
+        encoding_lists.object_sizes.append(context.get_object_count())
+        encoding_lists.action_sizes.append(context.get_action_count())
+        encoding_lists.node_sizes.append(context.get_node_count())
+        encoding_lists.node_count += context.get_node_count()
 
     # Convert the lists to tensors on the correct device
-    result = EncodedTensors()
-    result.flattened_relations = relations_to_tensors(intermediate.flattened_relations, device)
-    result.node_count = intermediate.node_count
-    result.node_sizes = torch.tensor(intermediate.node_sizes, dtype=torch.int, device=device, requires_grad=False)
-    result.object_indices = torch.tensor(intermediate.object_indices, dtype=torch.int, device=device, requires_grad=False)
-    result.object_sizes = torch.tensor(intermediate.object_sizes, dtype=torch.int, device=device, requires_grad=False)
-    result.action_indices = torch.tensor(intermediate.action_indices, dtype=torch.int, device=device, requires_grad=False)
-    result.action_sizes = torch.tensor(intermediate.action_sizes, dtype=torch.int, device=device, requires_grad=False)
-    return result
+    encoding_tensors = EncodedTensors()
+    encoding_tensors.flattened_relations = relations_to_tensors(encoding_lists.flattened_relations, device)
+    encoding_tensors.node_count = encoding_lists.node_count
+    encoding_tensors.node_sizes = torch.tensor(encoding_lists.node_sizes, dtype=torch.int, device=device, requires_grad=False)
+    encoding_tensors.object_indices = torch.tensor(encoding_lists.object_indices, dtype=torch.int, device=device, requires_grad=False)
+    encoding_tensors.object_sizes = torch.tensor(encoding_lists.object_sizes, dtype=torch.int, device=device, requires_grad=False)
+    encoding_tensors.action_indices = torch.tensor(encoding_lists.action_indices, dtype=torch.int, device=device, requires_grad=False)
+    encoding_tensors.action_sizes = torch.tensor(encoding_lists.action_sizes, dtype=torch.int, device=device, requires_grad=False)
+    return encoding_tensors
