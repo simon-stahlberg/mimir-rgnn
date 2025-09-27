@@ -39,19 +39,6 @@ class StateEncoder(Encoder):
         return [(get_predicate_name(predicate, False, True, self.suffix), predicate.get_arity()) for predicate in predicates]
 
     def encode(self, input_value: Any, state: mm.State, encoding: 'EncodedLists', context: 'EncodingContext') -> None:
-        """Encode a planning state into the intermediate representation.
-
-        Args:
-            input_value: The state to encode (must be a mm.State).
-            encoding: The encoding object to populate with graph structure.
-            state: The current planning state (same as input_value).
-
-        Returns:
-            Number of object nodes added to the graph.
-
-        Raises:
-            AssertionError: If input_value is not a State.
-        """
         assert isinstance(input_value, mm.State), f'StateEncoder expected a State, got {type(input_value)}'
 
         # Add atom relations for all atoms in the state
@@ -101,19 +88,6 @@ class GoalEncoder(Encoder):
         return relations
 
     def encode(self, input_value: Any, state: mm.State, encoding: 'EncodedLists', context: 'EncodingContext') -> None:
-        """Encode a goal condition into the intermediate representation.
-
-        Args:
-            input_value: The goal condition to encode (must be a GroundConjunctiveCondition).
-            encoding: The encoding object to populate with graph structure.
-            state: The current planning state for context.
-
-        Returns:
-            Number of nodes added (0, as goals don't add new nodes).
-
-        Raises:
-            AssertionError: If input_value is not a GroundConjunctiveCondition.
-        """
         assert isinstance(input_value, mm.GroundConjunctiveCondition), f'GoalEncoder expected a GroundConjunctiveCondition, got {type(input_value)}'
 
         for literal in input_value:  # type: ignore
@@ -160,19 +134,6 @@ class GroundActionsEncoder(Encoder):
         return [(get_action_name(action, self.suffix), action.get_arity() + 1) for action in domain.get_actions()]
 
     def encode(self, input_value: Any, state: mm.State, encoding: 'EncodedLists', context: 'EncodingContext') -> None:
-        """Encode ground actions into the intermediate representation.
-
-        Args:
-            input_value: List of ground actions to encode.
-            encoding: The encoding object to populate with graph structure.
-            state: The current planning state for context.
-
-        Returns:
-            Number of action nodes added to the graph.
-
-        Raises:
-            AssertionError: If input_value is not a list or contains non-GroundAction items.
-        """
         assert isinstance(input_value, list), f'GroundActionsEncoder expected a list, got {type(input_value)}'
 
         for action in input_value:
@@ -225,19 +186,6 @@ class TransitionEffectsEncoder(Encoder):
         return relations
 
     def encode(self, input_value: Any, state: mm.State, encoding: 'EncodedLists', context: 'EncodingContext') -> None:
-        """Encode transition effects into the intermediate representation.
-
-        Args:
-            input_value: List of effect lists (each inner list contains GroundLiterals).
-            encoding: The encoding object to populate with graph structure.
-            state: The current planning state for context.
-
-        Returns:
-            Number of transition nodes added to the graph.
-
-        Raises:
-            AssertionError: If input format is incorrect.
-        """
         if isinstance(input_value, tuple):
             effects_list = input_value[0]
             effects_relations = input_value[1]
