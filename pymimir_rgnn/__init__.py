@@ -52,11 +52,12 @@ Example:
 
 from .aggregations import HardMaximumAggregation, MeanAggregation, SmoothMaximumAggregation, SumAggregation
 from .bases import AggregationFunction, MessageFunction, UpdateFunction, Encoder, Decoder
+from .configs import HyperparameterConfig, ModuleConfig
 from .decoders import ActionScalarDecoder, ActionEmbeddingDecoder, ObjectsScalarDecoder, ObjectsEmbeddingDecoder
 from .encoders import StateEncoder, GoalEncoder, GroundActionsEncoder, TransitionEffectsEncoder
-from .configs import HyperparameterConfig, ModuleConfig
-from .model import ForwardState, RelationalGraphNeuralNetwork
 from .messages import PredicateMLPMessages, AttentionMessages
+from .model import ForwardState, RelationalGraphNeuralNetwork
+from .modules import MLP, SumReadout
 from .updates import MLPUpdates
 
 __all__ = [
@@ -73,6 +74,7 @@ __all__ = [
     "HyperparameterConfig",
     "MeanAggregation",
     "MessageFunction",
+    "MLP",
     "MLPUpdates",
     "ModuleConfig",
     "ObjectsEmbeddingDecoder",
@@ -82,6 +84,7 @@ __all__ = [
     "SmoothMaximumAggregation",
     "StateEncoder",
     "SumAggregation",
+    "SumReadout",
     "TransitionEffectsEncoder",
     "UpdateFunction",
 ]
