@@ -21,6 +21,8 @@ class EncodedLists:
         self.object_indices: list[int] = []
         self.action_sizes: list[int] = []
         self.action_indices: list[int] = []
+        self.virtual_sizes: list[int] = []
+        self.virtual_indices: list[int] = []
 
 
 class EncodedTensors:
@@ -39,6 +41,8 @@ class EncodedTensors:
         self.object_indices: torch.Tensor = torch.LongTensor()
         self.action_sizes: torch.Tensor = torch.LongTensor()
         self.action_indices: torch.Tensor = torch.LongTensor()
+        self.virtual_sizes: torch.Tensor = torch.LongTensor()
+        self.virtual_indices: torch.Tensor = torch.LongTensor()
 
 
 class EncodingContext():
@@ -50,14 +54,23 @@ class EncodingContext():
         objects = problem.get_objects() + problem.get_domain().get_constants()
         self.object_index_to_id: dict[int, int] = { obj.get_index(): i + id_offset for i, obj in enumerate(objects) }
         self.action_ids: list[int] = []
+        self.virtual_ids: list[int] = []
 
     def get_object_id(self, object_index: int) -> int:
         return self.object_index_to_id[object_index]
 
     def new_action_id(self) -> int:
-        action_id = self.id_offset + len(self.object_index_to_id) + len(self.action_ids)
+        action_id = self.id_offset + len(self.object_index_to_id) + len(self.action_ids) + len(self.virtual_ids)
         self.action_ids.append(action_id)
         return action_id
+
+    def new_virtual_id(self) -> int:
+        virtual_id = self.id_offset + len(self.object_index_to_id) + len(self.action_ids) + len(self.virtual_ids)
+        self.virtual_ids.append(virtual_id)
+        return virtual_id
+
+    def new_or_existing_virtual_id(self) -> int:
+        return self.virtual_ids[-1] if self.virtual_ids else self.new_virtual_id()
 
     def get_object_ids(self) -> list[int]:
         return list(self.object_index_to_id.values())
@@ -71,8 +84,14 @@ class EncodingContext():
     def get_action_count(self) -> int:
         return len(self.action_ids)
 
+    def get_virtual_ids(self) -> list[int]:
+        return self.virtual_ids
+
+    def get_virtual_count(self) -> int:
+        return len(self.virtual_ids)
+
     def get_node_count(self) -> int:
-        return len(self.object_index_to_id) + len(self.action_ids)
+        return self.get_object_count() + self.get_action_count() + self.get_virtual_count()
 
 
 class Encoder(ABC):

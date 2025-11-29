@@ -14,15 +14,19 @@ class ActionScalarDecoder(Decoder):
     preferences in reinforcement learning applications.
     """
 
-    def __init__(self, hparam_config: 'HyperparameterConfig'):
+    def __init__(self, hparam_config: 'HyperparameterConfig', use_virtual_node: bool = False):
         """Initialize the action scalar decoder.
 
         Args:
             config: The hyperparameter configuration containing embedding sizes.
+            use_virtual_node: Whether to use the virtual node in the readout.
         """
         super().__init__()
+        assert isinstance(hparam_config, HyperparameterConfig), "hparam_config must be an instance of HyperparameterConfig."
+        assert isinstance(use_virtual_node, bool), "use_virtual_node must be a boolean."
+        self.use_virtual_node = use_virtual_node
         self._object_readout = SumReadout(hparam_config.embedding_size, hparam_config.embedding_size)
-        self._action_value = MLP(2 * hparam_config.embedding_size, 1)
+        self._action_value = MLP((2 + int(self.use_virtual_node)) * hparam_config.embedding_size, 1)
 
     def forward(self, node_embeddings: torch.Tensor, encoding: 'EncodedTensors') -> list[torch.Tensor]:
         """Compute scalar values for each action.
@@ -37,9 +41,16 @@ class ActionScalarDecoder(Decoder):
         """
         action_embeddings = node_embeddings.index_select(0, encoding.action_indices)
         object_embeddings = node_embeddings.index_select(0, encoding.object_indices)
-        object_aggregation: torch.Tensor = self._object_readout(object_embeddings, encoding.object_sizes)
+        object_aggregation = self._object_readout.forward(object_embeddings, encoding.object_sizes)
         object_aggregation = object_aggregation.repeat_interleave(encoding.action_sizes, dim=0)
-        values: torch.Tensor = self._action_value(torch.cat((action_embeddings, object_aggregation), dim=1))
+        if self.use_virtual_node:
+            assert min(encoding.virtual_sizes) == 1, "Each instance must have exactly one virtual node when use_virtual_node is True."
+            assert max(encoding.virtual_sizes) == 1, "Each instance must have exactly one virtual node when use_virtual_node is True."
+            virtual_embeddings = node_embeddings.index_select(0, encoding.virtual_indices)
+            virtual_embeddings = virtual_embeddings.repeat_interleave(encoding.action_sizes, dim=0)
+            values = self._action_value.forward(torch.cat((action_embeddings, object_aggregation, virtual_embeddings), dim=1))
+        else:
+            values = self._action_value.forward(torch.cat((action_embeddings, object_aggregation), dim=1))
         return [action_values.view(-1) for action_values in values.split(encoding.action_sizes.tolist())]  # type: ignore
 
 
@@ -72,14 +83,19 @@ class ObjectsScalarDecoder(Decoder):
     estimation or global state assessment.
     """
 
-    def __init__(self, hparam_config: 'HyperparameterConfig'):
+    def __init__(self, hparam_config: 'HyperparameterConfig', use_virtual_node: bool = False):
         """Initialize the objects scalar decoder.
 
         Args:
             config: The hyperparameter configuration containing embedding sizes.
+            use_virtual_node: Whether to use the virtual node in the readout.
         """
         super().__init__()
-        self._object_readout = SumReadout(hparam_config.embedding_size, 1)
+        assert isinstance(hparam_config, HyperparameterConfig), "hparam_config must be an instance of HyperparameterConfig."
+        assert isinstance(use_virtual_node, bool), "use_virtual_node must be a boolean."
+        self.use_virtual_node = use_virtual_node
+        self._object_readout = SumReadout(hparam_config.embedding_size, hparam_config.embedding_size)
+        self._state_value = MLP((1 + int(self.use_virtual_node)) * hparam_config.embedding_size, 1)
 
     def forward(self, node_embeddings: torch.Tensor, encoding: 'EncodedTensors') -> torch.Tensor:
         """Compute scalar values by aggregating object embeddings.
@@ -92,7 +108,12 @@ class ObjectsScalarDecoder(Decoder):
             Tensor containing one scalar value per input instance.
         """
         object_embeddings = node_embeddings.index_select(0, encoding.object_indices)
-        return self._object_readout(object_embeddings, encoding.object_sizes).view(-1)
+        object_aggregation = self._object_readout(object_embeddings, encoding.object_sizes)
+        if self.use_virtual_node:
+            virtual_embeddings = node_embeddings.index_select(0, encoding.virtual_indices)
+            return self._state_value(torch.cat((object_aggregation, virtual_embeddings), dim=1)).view(-1)
+        else:
+            return self._state_value(object_aggregation).view(-1)
 
 
 class ObjectsEmbeddingDecoder(Decoder):

@@ -10,17 +10,25 @@ TEST_DIR = Path(__file__).parent
 DATA_DIR = TEST_DIR / 'data'
 
 
-@pytest.mark.parametrize("dom, agg, layers, size, gro, norm", [
-    ('blocks', HardMaximumAggregation(), 2, 2, False, False),
-    ('blocks', SmoothMaximumAggregation(), 3, 3, False, False),
-    ('blocks', MeanAggregation(), 4, 4, False, True),
-    ('blocks', SumAggregation(), 5, 5, True, False),
-    ('gripper', HardMaximumAggregation(), 2, 2, True, False),
-    ('gripper', SmoothMaximumAggregation(), 3, 3, True, False),
-    ('gripper', MeanAggregation(), 4, 4, True, True),
-    ('gripper', SumAggregation(), 5, 5, True, True),
+@pytest.mark.parametrize("dom, agg, layers, size, gro, norm, vn", [
+    ('blocks', HardMaximumAggregation(), 2, 2, False, False, False),
+    ('blocks', SmoothMaximumAggregation(), 3, 3, False, False, False),
+    ('blocks', MeanAggregation(), 4, 4, False, True, False),
+    ('blocks', SumAggregation(), 5, 5, True, False, False),
+    ('gripper', HardMaximumAggregation(), 2, 2, True, False, False),
+    ('gripper', SmoothMaximumAggregation(), 3, 3, True, False, False),
+    ('gripper', MeanAggregation(), 4, 4, True, True, False),
+    ('gripper', SumAggregation(), 5, 5, True, True, False),
+    ('blocks', HardMaximumAggregation(), 2, 2, False, False, True),
+    ('blocks', SmoothMaximumAggregation(), 3, 3, False, False, True),
+    ('blocks', MeanAggregation(), 4, 4, False, True, True),
+    ('blocks', SumAggregation(), 5, 5, True, False, True),
+    ('gripper', HardMaximumAggregation(), 2, 2, True, False, True),
+    ('gripper', SmoothMaximumAggregation(), 3, 3, True, False, True),
+    ('gripper', MeanAggregation(), 4, 4, True, True, True),
+    ('gripper', SumAggregation(), 5, 5, True, True, True),
 ])
-def test_create_model(dom: str, agg: AggregationFunction, layers: int, size: int, gro: bool, norm: bool):
+def test_create_model(dom: str, agg: AggregationFunction, layers: int, size: int, gro: bool, norm: bool, vn: bool):
     domain_path = DATA_DIR / dom / 'domain.pddl'
     domain = mm.Domain(domain_path)
     hparam_config = HyperparameterConfig(
@@ -30,7 +38,7 @@ def test_create_model(dom: str, agg: AggregationFunction, layers: int, size: int
         global_readout=gro,
         normalize_updates=norm,
     )
-    input_spec = (StateEncoder(), GroundActionsEncoder(), GoalEncoder())
+    input_spec = (StateEncoder(use_virtual_node=vn), GroundActionsEncoder(use_virtual_node=vn), GoalEncoder(use_virtual_node=vn))
     output_spec = [('q_values', ActionScalarDecoder(hparam_config))]
     module_config = ModuleConfig(
         aggregation_function=agg,
@@ -41,17 +49,25 @@ def test_create_model(dom: str, agg: AggregationFunction, layers: int, size: int
     assert model is not None
 
 
-@pytest.mark.parametrize("dom, agg, layers, size, gro, norm", [
-    ('blocks', HardMaximumAggregation(), 2, 2, False, False),
-    ('blocks', SmoothMaximumAggregation(), 3, 3, False, False),
-    ('blocks', MeanAggregation(), 4, 4, False, True),
-    ('blocks', SumAggregation(), 5, 5, True, False),
-    ('gripper', HardMaximumAggregation(), 2, 2, True, False),
-    ('gripper', SmoothMaximumAggregation(), 3, 3, True, False),
-    ('gripper', MeanAggregation(), 4, 4, True, True),
-    ('gripper', SumAggregation(), 5, 5, True, True),
+@pytest.mark.parametrize("dom, agg, layers, size, gro, norm, vn", [
+    ('blocks', HardMaximumAggregation(), 2, 2, False, False, False),
+    ('blocks', SmoothMaximumAggregation(), 3, 3, False, False, False),
+    ('blocks', MeanAggregation(), 4, 4, False, True, False),
+    ('blocks', SumAggregation(), 5, 5, True, False, False),
+    ('gripper', HardMaximumAggregation(), 2, 2, True, False, False),
+    ('gripper', SmoothMaximumAggregation(), 3, 3, True, False, False),
+    ('gripper', MeanAggregation(), 4, 4, True, True, False),
+    ('gripper', SumAggregation(), 5, 5, True, True, False),
+    ('blocks', HardMaximumAggregation(), 2, 2, False, False, True),
+    ('blocks', SmoothMaximumAggregation(), 3, 3, False, False, True),
+    ('blocks', MeanAggregation(), 4, 4, False, True, True),
+    ('blocks', SumAggregation(), 5, 5, True, False, True),
+    ('gripper', HardMaximumAggregation(), 2, 2, True, False, True),
+    ('gripper', SmoothMaximumAggregation(), 3, 3, True, False, True),
+    ('gripper', MeanAggregation(), 4, 4, True, True, True),
+    ('gripper', SumAggregation(), 5, 5, True, True, True),
 ])
-def test_forward_model(dom: str, agg: AggregationFunction, layers: int, size: int, gro: bool, norm: bool):
+def test_forward_model(dom: str, agg: AggregationFunction, layers: int, size: int, gro: bool, norm: bool, vn: bool):
     domain_path = DATA_DIR / dom / 'domain.pddl'
     problem_path = DATA_DIR / dom / 'problem.pddl'
     domain = mm.Domain(domain_path)
@@ -63,8 +79,8 @@ def test_forward_model(dom: str, agg: AggregationFunction, layers: int, size: in
         global_readout=gro,
         normalize_updates=norm,
     )
-    input_spec=(StateEncoder(), GroundActionsEncoder(), GoalEncoder())
-    output_spec=[('q_values', ActionScalarDecoder(hparam_config))]
+    input_spec=(StateEncoder(use_virtual_node=vn), GroundActionsEncoder(use_virtual_node=vn), GoalEncoder(use_virtual_node=vn))
+    output_spec=[('q_values', ActionScalarDecoder(hparam_config, use_virtual_node=vn)), ('value', ObjectsScalarDecoder(hparam_config, use_virtual_node=vn))]
     module_config = ModuleConfig(
         aggregation_function=agg,
         message_function=PredicateMLPMessages(hparam_config, input_spec),
@@ -80,6 +96,11 @@ def test_forward_model(dom: str, agg: AggregationFunction, layers: int, size: in
     assert isinstance(q_values, list)
     assert len(q_values) == 1
     assert len(q_values[0]) == len(initial_actions)
+    value = output.readout('value')
+    assert isinstance(value, torch.Tensor)
+    assert not torch.isnan(value).any()
+    assert value.shape == (1,)
+    assert value.numel() == 1
 
 @pytest.mark.parametrize("domain_name", [('blocks'), ('gripper')])
 def test_forward_hook(domain_name: str):
@@ -175,8 +196,8 @@ def test_forward_different_batch(domain_name: str):
     assert len(readout) == len(different_goals)
     assert readout.var() > 0.0000001
 
-
-def test_save_and_load():
+@pytest.mark.parametrize("vn", [False, True])
+def test_save_and_load(vn: bool):
     domain_path = DATA_DIR / 'blocks' / 'domain.pddl'
     domain = mm.Domain(domain_path)
     # Create a model.
@@ -187,8 +208,8 @@ def test_save_and_load():
         global_readout=True,
         normalize_updates=False
     )
-    input_spec=(StateEncoder(), GroundActionsEncoder(), GoalEncoder())
-    output_spec=[('q_values', ActionScalarDecoder(hparam_config_1))]
+    input_spec=(StateEncoder(use_virtual_node=vn), GroundActionsEncoder(use_virtual_node=vn), GoalEncoder(use_virtual_node=vn))
+    output_spec=[('q_values', ActionScalarDecoder(hparam_config_1, use_virtual_node=vn))]
     module_config_1 = ModuleConfig(
         aggregation_function=MeanAggregation(),
         message_function=PredicateMLPMessages(hparam_config_1, input_spec),
@@ -206,6 +227,16 @@ def test_save_and_load():
     assert model_1._hparam_config.embedding_size == model_2._hparam_config.embedding_size
     assert model_1._hparam_config.num_layers == model_2._hparam_config.num_layers
     assert extras_1 == extras_2
+    assert hasattr(model_1, '_input_spec')
+    assert hasattr(model_2, '_input_spec')
+    assert isinstance(model_1._input_spec, tuple)
+    assert isinstance(model_2._input_spec, tuple)
+    assert len(model_1._input_spec) > 0
+    assert len(model_2._input_spec) > 0
+    assert len(model_1._input_spec) == len(model_2._input_spec)
+    assert isinstance(model_1._input_spec[0], StateEncoder)
+    assert isinstance(model_2._input_spec[0], StateEncoder)
+    assert model_1._input_spec[0].use_virtual_node == model_2._input_spec[0].use_virtual_node
 
 
 @pytest.mark.parametrize("domain_name", [('blocks'), ('gripper')])
@@ -328,7 +359,7 @@ def test_attention_messages(domain_name: str):
     problem_path = DATA_DIR / domain_name / 'problem.pddl'
     domain = mm.Domain(domain_path)
     problem = mm.Problem(domain, problem_path)
-    
+
     hparam_config = HyperparameterConfig(
         domain=domain,
         num_layers=2,
@@ -336,7 +367,7 @@ def test_attention_messages(domain_name: str):
     )
     input_spec = (StateEncoder(), GroundActionsEncoder(), GoalEncoder())
     output_spec = [('q_values', ActionScalarDecoder(hparam_config))]
-    
+
     # Create model with AttentionMessages
     module_config = ModuleConfig(
         aggregation_function=MeanAggregation(),
@@ -344,21 +375,21 @@ def test_attention_messages(domain_name: str):
         update_function=MLPUpdates(hparam_config)
     )
     model = RelationalGraphNeuralNetwork(hparam_config, module_config, input_spec, output_spec)  # type: ignore
-    
+
     # Test forward pass
     initial_state = problem.get_initial_state()
     goal_condition = problem.get_goal_condition()
     ground_actions = initial_state.generate_applicable_actions()
-    
+
     input_data = [(initial_state, ground_actions, goal_condition)]
     result = model.forward(input_data)
-    
+
     # Verify output
     q_values = result.readout('q_values')
     assert isinstance(q_values, list)
     assert len(q_values) == 1  # One instance in batch
     assert len(q_values[0]) == len(ground_actions)
-    
+
     # Check that we get valid tensors
     assert all(isinstance(val, torch.Tensor) for val in q_values[0])
     assert all(val.numel() == 1 for val in q_values[0])  # Each should be a scalar
@@ -371,7 +402,7 @@ def test_curry_forward(domain_name: str):
     problem_path = DATA_DIR / domain_name / 'problem.pddl'
     domain = mm.Domain(domain_path)
     problem = mm.Problem(domain, problem_path)
-    
+
     # Setup model
     hparam_config = HyperparameterConfig(
         domain=domain,
@@ -424,7 +455,7 @@ def test_curry_forward(domain_name: str):
     # Test 3: Verify that the curried function can be called multiple times
     curried_result_2 = curried_func()
     curried_q_values_2 = curried_result_2.readout('q_values')
-    
+
     # Should produce the same results
     for val1, val2 in zip(curried_q_values[0], curried_q_values_2[0]):
         assert torch.allclose(val1, val2, atol=1e-6)
