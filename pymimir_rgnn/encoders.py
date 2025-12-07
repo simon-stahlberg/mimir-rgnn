@@ -218,6 +218,7 @@ class TransitionEffectsEncoder(Encoder):
 
         problem = state.get_problem()
         goal_condition = problem.get_goal_condition()
+        goal_dictionary = {goal_literal.get_atom(): goal_literal for goal_literal in goal_condition}
         num_transitions = len(effects_list)
 
         transition_index_to_id: dict[int, int] = dict()
@@ -240,21 +241,21 @@ class TransitionEffectsEncoder(Encoder):
                 else:
                     encoding.flattened_relations[effect_name].extend(object_ids)
 
-                # Add literals stating how this transition affects the goal
-                for goal_literal in goal_condition:
+                # Add how this transition affects the goal
+                if effect_atom in goal_dictionary:
+                    goal_literal = goal_dictionary[effect_atom]
                     assert isinstance(goal_literal, mm.GroundLiteral), 'Goal condition should contain ground literals.'
                     assert goal_literal.get_polarity(), 'Only positive literals are supported in the goal condition.'
-                    if effect_atom == goal_literal.get_atom():
-                        goal_effect_name = get_effect_name(effect_atom.get_predicate(), effect_literal.get_polarity(), True, self.suffix)
-                        goal_object_ids = [transition_id] + [context.get_object_id(obj.get_index()) for obj in effect_atom.get_terms()]
-                        if self.use_virtual_node:
-                            virtual_id = context.new_or_existing_virtual_id()
-                            goal_object_ids.append(virtual_id)
-                        if goal_effect_name not in encoding.flattened_relations:
-                            encoding.flattened_relations[goal_effect_name] = goal_object_ids
-                        else:
-                            encoding.flattened_relations[goal_effect_name].extend(goal_object_ids)
-                        break  # No need to check other goal literals
+                    assert effect_atom == goal_literal.get_atom()
+                    goal_effect_name = get_effect_name(effect_atom.get_predicate(), effect_literal.get_polarity(), True, self.suffix)
+                    goal_object_ids = [transition_id] + [context.get_object_id(obj.get_index()) for obj in effect_atom.get_terms()]
+                    if self.use_virtual_node:
+                        virtual_id = context.new_or_existing_virtual_id()
+                        goal_object_ids.append(virtual_id)
+                    if goal_effect_name not in encoding.flattened_relations:
+                        encoding.flattened_relations[goal_effect_name] = goal_object_ids
+                    else:
+                        encoding.flattened_relations[goal_effect_name].extend(goal_object_ids)
 
         # Add relations between transitions if provided
         for from_index, to_index in effects_relations:
