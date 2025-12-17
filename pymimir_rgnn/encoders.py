@@ -245,6 +245,31 @@ class TransitionEffectsEncoder(Encoder):
                 encoding.flattened_relations[effect_relation_name].extend(relation_ids)
 
 
+class VirtualNodeEncoder(Encoder):
+    """Encoder for virtual nodes.
+
+    This encoder adds a virtual node to the representation.
+    All original objects are connected to a new virtual node.
+    This can help the graph neural network to better capture global context.
+    """
+    def __init__(self) -> None:
+        """Initialize the virtual node encoder."""
+        super().__init__()
+        self.link_name = 'virtual_node_link'
+
+    def get_relations(self, domain: mm.Domain) -> list[tuple[str, int]]:
+        return [(self.link_name, 2)]
+
+    def encode(self, input_value: Any, state: mm.State, encoding: 'EncodedLists', context: 'EncodingContext') -> None:
+        virtual_id = context.new_virtual_id()
+        for obj in state.get_problem().get_objects():
+            object_id = context.get_object_id(obj.get_index())
+            if self.link_name not in encoding.flattened_relations:
+                encoding.flattened_relations[self.link_name] = [virtual_id, object_id]
+            else:
+                encoding.flattened_relations[self.link_name].extend([virtual_id, object_id])
+
+
 def get_relations_from_encoders(domain: mm.Domain, input_specification: tuple[Encoder, ...]) -> list[tuple[str, int]]:
     """Get all relations from a collection of encoders.
 
