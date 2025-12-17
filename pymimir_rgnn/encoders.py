@@ -15,17 +15,14 @@ class StateEncoder(Encoder):
     Objects become nodes, and atoms become relations between objects.
     """
 
-    def __init__(self, use_virtual_node: bool = False, suffix: str = '') -> None:
+    def __init__(self, suffix: str = '') -> None:
         """Initialize the state encoder.
 
         Args:
-            use_virtual_node: Whether to add a virtual node to each state relation.
             suffix: Optional suffix to append to relation names to avoid conflicts.
         """
         super().__init__()
-        assert isinstance(use_virtual_node, bool), 'use_virtual_node must be a boolean.'
         assert isinstance(suffix, str), 'Suffix must be a string.'
-        self.use_virtual_node = use_virtual_node
         self.suffix = suffix
 
     def get_relations(self, domain: mm.Domain) -> list[tuple[str, int]]:
@@ -39,7 +36,7 @@ class StateEncoder(Encoder):
         """
         ignored_predicate_names = ['number']
         predicates = [predicate for predicate in domain.get_predicates() if not predicate.get_name() in ignored_predicate_names]
-        return [(get_predicate_name(predicate, False, True, self.suffix), predicate.get_arity() + int(self.use_virtual_node)) for predicate in predicates]
+        return [(get_predicate_name(predicate, False, True, self.suffix), predicate.get_arity()) for predicate in predicates]
 
     def encode(self, input_value: Any, state: mm.State, encoding: 'EncodedLists', context: 'EncodingContext') -> None:
         assert isinstance(input_value, mm.State), f'StateEncoder expected a State, got {type(input_value)}'
@@ -48,9 +45,6 @@ class StateEncoder(Encoder):
         for atom in input_value.get_atoms():
             relation_name = get_atom_name(atom, state, False, self.suffix)
             object_indices: list[int] = [context.get_object_id(obj.get_index()) for obj in atom.get_terms()]
-            if self.use_virtual_node:
-                virtual_id = context.new_or_existing_virtual_id()
-                object_indices.append(virtual_id)
             if relation_name not in encoding.flattened_relations:
                 encoding.flattened_relations[relation_name] = object_indices
             else:
@@ -66,17 +60,14 @@ class GoalEncoder(Encoder):
     in the current state relative to the goal.
     """
 
-    def __init__(self, use_virtual_node: bool = False, suffix: str = '') -> None:
+    def __init__(self, suffix: str = '') -> None:
         """Initialize the goal encoder.
 
         Args:
-            use_virtual_node: Whether to add a virtual node to each goal relation.
             suffix: Suffix to append to relation names to avoid conflicts.
         """
         super().__init__()
-        assert isinstance(use_virtual_node, bool), 'use_virtual_node must be a boolean.'
         assert isinstance(suffix, str), 'Suffix must be a string.'
-        self.use_virtual_node = use_virtual_node
         self.suffix = suffix
 
     def get_relations(self, domain: mm.Domain) -> list[tuple[str, int]]:
@@ -92,8 +83,8 @@ class GoalEncoder(Encoder):
         ignored_predicate_names = ['number']
         predicates = [predicate for predicate in domain.get_predicates() if not predicate.get_name() in ignored_predicate_names]
         relations = []
-        relations.extend([(get_predicate_name(predicate, True, False, self.suffix), predicate.get_arity() + int(self.use_virtual_node)) for predicate in predicates])
-        relations.extend([(get_predicate_name(predicate, True, True, self.suffix), predicate.get_arity() + int(self.use_virtual_node)) for predicate in predicates])
+        relations.extend([(get_predicate_name(predicate, True, False, self.suffix), predicate.get_arity()) for predicate in predicates])
+        relations.extend([(get_predicate_name(predicate, True, True, self.suffix), predicate.get_arity()) for predicate in predicates])
         return relations
 
     def encode(self, input_value: Any, state: mm.State, encoding: 'EncodedLists', context: 'EncodingContext') -> None:
@@ -105,9 +96,6 @@ class GoalEncoder(Encoder):
             atom = literal.get_atom()
             relation_name = get_atom_name(atom, state, True, self.suffix)
             object_indices: list[int] = [context.get_object_id(obj.get_index()) for obj in atom.get_terms()]
-            if self.use_virtual_node:
-                virtual_id = context.new_or_existing_virtual_id()
-                object_indices.append(virtual_id)
             if relation_name not in encoding.flattened_relations:
                 encoding.flattened_relations[relation_name] = object_indices
             else:
@@ -123,17 +111,14 @@ class GroundActionsEncoder(Encoder):
     and relations connect actions to their parameter objects.
     """
 
-    def __init__(self, use_virtual_node: bool = False, suffix: str = '') -> None:
+    def __init__(self, suffix: str = '') -> None:
         """Initialize the ground actions encoder.
 
         Args:
-            use_virtual_node: Whether to add a virtual node to each action relation.
             suffix: Optional suffix to append to relation names to avoid conflicts.
         """
         super().__init__()
-        assert isinstance(use_virtual_node, bool), 'use_virtual_node must be a boolean.'
         assert isinstance(suffix, str), 'Suffix must be a string.'
-        self.use_virtual_node = use_virtual_node
         self.suffix = suffix
 
     def get_relations(self, domain: mm.Domain) -> list[tuple[str, int]]:
@@ -146,7 +131,7 @@ class GroundActionsEncoder(Encoder):
             List of (relation_name, arity) pairs for all actions, where arity
             is the action's parameter count plus 1 (for the action node itself).
         """
-        return [(get_action_name(action, self.suffix), action.get_arity() + 1 + int(self.use_virtual_node)) for action in domain.get_actions()]
+        return [(get_action_name(action, self.suffix), action.get_arity() + 1) for action in domain.get_actions()]
 
     def encode(self, input_value: Any, state: mm.State, encoding: 'EncodedLists', context: 'EncodingContext') -> None:
         assert isinstance(input_value, list), f'GroundActionsEncoder expected a list, got {type(input_value)}'
@@ -156,9 +141,6 @@ class GroundActionsEncoder(Encoder):
             relation_name = get_action_name(action, self.suffix)
             action_id = context.new_action_id()
             term_ids = [action_id] + [context.get_object_id(obj.get_index()) for obj in action.get_objects()]
-            if self.use_virtual_node:
-                virtual_id = context.new_or_existing_virtual_id()
-                term_ids.append(virtual_id)
             if relation_name not in encoding.flattened_relations:
                 encoding.flattened_relations[relation_name] = term_ids
             else:
@@ -173,17 +155,14 @@ class TransitionEffectsEncoder(Encoder):
     transition becomes a new node, with relations connecting it to affected atoms.
     """
 
-    def __init__(self, use_virtual_node: bool = False, suffix: str = '') -> None:
+    def __init__(self, suffix: str = '') -> None:
         """Initialize the transition effects encoder.
 
         Args:
-            use_virtual_node: Whether to add a virtual node to each effect relation.
             suffix: Optional suffix to append to relation names to avoid conflicts.
         """
         super().__init__()
-        assert isinstance(use_virtual_node, bool), 'use_virtual_node must be a boolean.'
         assert isinstance(suffix, str), 'Suffix must be a string.'
-        self.use_virtual_node = use_virtual_node
         self.suffix = suffix
 
     def get_relations(self, domain: mm.Domain) -> list[tuple[str, int]]:
@@ -199,11 +178,11 @@ class TransitionEffectsEncoder(Encoder):
         ignored_predicate_names = ['number']
         predicates = [predicate for predicate in domain.get_predicates() if not predicate.get_name() in ignored_predicate_names]
         relations = []
-        relations.extend([(get_effect_name(predicate, True, False, self.suffix), predicate.get_arity() + 1 + int(self.use_virtual_node)) for predicate in predicates])
-        relations.extend([(get_effect_name(predicate, False, False, self.suffix), predicate.get_arity() + 1 + int(self.use_virtual_node)) for predicate in predicates])
-        relations.extend([(get_effect_name(predicate, True, True, self.suffix), predicate.get_arity() + 1 + int(self.use_virtual_node)) for predicate in predicates])
-        relations.extend([(get_effect_name(predicate, False, True, self.suffix), predicate.get_arity() + 1 + int(self.use_virtual_node)) for predicate in predicates])
-        relations.append((get_effect_relation_name(self.suffix), 2 + int(self.use_virtual_node)))
+        relations.extend([(get_effect_name(predicate, True, False, self.suffix), predicate.get_arity() + 1) for predicate in predicates])
+        relations.extend([(get_effect_name(predicate, False, False, self.suffix), predicate.get_arity() + 1) for predicate in predicates])
+        relations.extend([(get_effect_name(predicate, True, True, self.suffix), predicate.get_arity() + 1) for predicate in predicates])
+        relations.extend([(get_effect_name(predicate, False, True, self.suffix), predicate.get_arity() + 1) for predicate in predicates])
+        relations.append((get_effect_relation_name(self.suffix), 2))
         return relations
 
     def encode(self, input_value: Any, state: mm.State, encoding: 'EncodedLists', context: 'EncodingContext') -> None:
@@ -233,9 +212,6 @@ class TransitionEffectsEncoder(Encoder):
                 effect_atom = effect_literal.get_atom()
                 effect_name = get_effect_name(effect_atom.get_predicate(), effect_literal.get_polarity(), False, self.suffix)
                 object_ids = [transition_id] + [context.get_object_id(obj.get_index()) for obj in effect_atom.get_terms()]
-                if self.use_virtual_node:
-                    virtual_id = context.new_or_existing_virtual_id()
-                    object_ids.append(virtual_id)
                 if effect_name not in encoding.flattened_relations:
                     encoding.flattened_relations[effect_name] = object_ids
                 else:
@@ -249,9 +225,6 @@ class TransitionEffectsEncoder(Encoder):
                     assert effect_atom == goal_literal.get_atom()
                     goal_effect_name = get_effect_name(effect_atom.get_predicate(), effect_literal.get_polarity(), True, self.suffix)
                     goal_object_ids = [transition_id] + [context.get_object_id(obj.get_index()) for obj in effect_atom.get_terms()]
-                    if self.use_virtual_node:
-                        virtual_id = context.new_or_existing_virtual_id()
-                        goal_object_ids.append(virtual_id)
                     if goal_effect_name not in encoding.flattened_relations:
                         encoding.flattened_relations[goal_effect_name] = goal_object_ids
                     else:
@@ -266,9 +239,6 @@ class TransitionEffectsEncoder(Encoder):
             to_id = transition_index_to_id[to_index]
             effect_relation_name = get_effect_relation_name(self.suffix)
             relation_ids = [from_id, to_id]
-            if self.use_virtual_node:
-                virtual_id = context.new_or_existing_virtual_id()
-                relation_ids.append(virtual_id)
             if effect_relation_name not in encoding.flattened_relations:
                 encoding.flattened_relations[effect_relation_name] = relation_ids
             else:
@@ -342,10 +312,8 @@ def get_input_from_encoders(input: list[tuple], input_specification: tuple[Encod
         # Update global encoding with instance results
         encoding_lists.object_indices.extend(context.get_object_ids())
         encoding_lists.action_indices.extend(context.get_action_ids())
-        encoding_lists.virtual_indices.extend(context.get_virtual_ids())
         encoding_lists.object_sizes.append(context.get_object_count())
         encoding_lists.action_sizes.append(context.get_action_count())
-        encoding_lists.virtual_sizes.append(context.get_virtual_count())
         encoding_lists.node_sizes.append(context.get_node_count())
         encoding_lists.node_count += context.get_node_count()
 
@@ -358,6 +326,4 @@ def get_input_from_encoders(input: list[tuple], input_specification: tuple[Encod
     encoding_tensors.object_sizes = torch.tensor(encoding_lists.object_sizes, dtype=torch.int, device=device, requires_grad=False)
     encoding_tensors.action_indices = torch.tensor(encoding_lists.action_indices, dtype=torch.int, device=device, requires_grad=False)
     encoding_tensors.action_sizes = torch.tensor(encoding_lists.action_sizes, dtype=torch.int, device=device, requires_grad=False)
-    encoding_tensors.virtual_indices = torch.tensor(encoding_lists.virtual_indices, dtype=torch.int, device=device, requires_grad=False)
-    encoding_tensors.virtual_sizes = torch.tensor(encoding_lists.virtual_sizes, dtype=torch.int, device=device, requires_grad=False)
     return encoding_tensors
