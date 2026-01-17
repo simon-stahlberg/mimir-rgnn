@@ -297,9 +297,9 @@ def get_input_from_encoders(input: list[tuple], input_specification: tuple[Encod
 
     Args:
         input: List of input tuples, where each tuple contains the inputs
-              corresponding to the encoder specification.
+               corresponding to the encoder specification.
         input_specification: Tuple of encoder instances that define how to
-                            process each element of the input tuples.
+                             process each element of the input tuples.
         device: The torch device to place the resulting tensors on.
 
     Returns:
@@ -307,7 +307,7 @@ def get_input_from_encoders(input: list[tuple], input_specification: tuple[Encod
 
     Raises:
         AssertionError: If input format doesn't match specification or if
-                       no StateEncoder is found in the specification.
+                        no StateEncoder is found in the specification.
     """
     encoding_lists = EncodedLists()
 
