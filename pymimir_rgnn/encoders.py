@@ -352,3 +352,146 @@ def get_input_from_encoders(input: list[tuple], input_specification: tuple[Encod
     encoding_tensors.action_indices = torch.tensor(encoding_lists.action_indices, dtype=torch.int, device=device, requires_grad=False)
     encoding_tensors.action_sizes = torch.tensor(encoding_lists.action_sizes, dtype=torch.int, device=device, requires_grad=False)
     return encoding_tensors
+
+
+class ExpressiveEncoderBase(Encoder):
+    def __init__(self, suffix: str) -> None:
+        super().__init__()
+        assert isinstance(suffix, str), 'Suffix must be a string.'
+        self.prefix = 'expressive_'
+        self.suffix = suffix
+
+    def get_relation_name_of_predicate(self, predicate: mm.Predicate, is_goal_predicate: bool, is_true: bool) -> str:
+        return self.prefix + get_predicate_name(predicate, is_goal_predicate, is_true, self.suffix)
+
+    def get_relation_name_of_ground_atom(self, ground_atom: mm.GroundAtom, state: mm.State, is_goal_atom: bool) -> str:
+        return self.prefix + get_atom_name(ground_atom, state, is_goal_atom, self.suffix)
+
+    @staticmethod
+    def get_id(idx1: int, idx2: int, context: 'EncodingContext') -> int:
+        # We use the already reserved id for the singleton if o1 and o2 are the same.
+        # This also makes the encoder compatible with other encoders that are only
+        # over these ids. For distinct pairs, we allocate auxiliary ids.
+        return context.get_object_id(idx1) if idx1 == idx2 else context.new_or_existing_auxiliary_id((idx1, idx2))
+
+
+class ExpressiveStateEncoder(ExpressiveEncoderBase):
+    """Expressive encoder for planning states.
+
+    This encoder transforms a planning state (which contains atoms/facts that are
+    currently true) into nodes and relations for the graph neural network.
+    In contrast to StateEncoder, pair of objects become nodes, and atoms become
+    relations between these pairs.
+    """
+
+    def __init__(self, suffix: str = '') -> None:
+        """Initialize the expressive state encoder.
+
+        Args:
+            suffix: Optional suffix to append to relation names to avoid conflicts.
+        """
+        super().__init__(suffix)
+        self.composition_name = self.prefix + 'composition'
+
+    def get_relations(self, domain: mm.Domain) -> list[tuple[str, int]]:
+        """Get relations that this encoder will add for state atoms.
+
+        Args:
+            domain: The PDDL domain containing predicate definitions.
+
+        Returns:
+            List of (relation_name, arity) pairs for all predicates except 'number'.
+        """
+        def get_expressive_relation(predicate: mm.Predicate):
+            return (self.get_relation_name_of_predicate(predicate, False, True), predicate.get_arity() * predicate.get_arity())
+        ignored_predicate_names = ['number']
+        predicates = [predicate for predicate in domain.get_predicates() if not predicate.get_name() in ignored_predicate_names]
+        relations = [get_expressive_relation(predicate) for predicate in predicates]
+        relations.append((self.composition_name, 3))
+        return relations
+
+    def encode(self, input_value: Any, state: mm.State, encoding: 'EncodedLists', context: 'EncodingContext') -> None:
+        assert isinstance(input_value, mm.State), f'ExpressiveStateEncoder expected a State, got {type(input_value)}'
+        # Add atom relations for all atoms in the state
+        for atom in input_value.get_atoms():
+            relation_name = self.get_relation_name_of_ground_atom(atom, state, False)
+            term_indices = [obj.get_index() for obj in atom.get_terms()]
+            # Create the relation list if it does not already exist.
+            if relation_name not in encoding.flattened_relations:
+                flattened_relation = []
+                encoding.flattened_relations[relation_name] = flattened_relation
+            else:
+                flattened_relation = encoding.flattened_relations[relation_name]
+            # Add all possible pair combinations of the terms as arguments.
+            for o1 in term_indices:
+                for o2 in term_indices:
+                    flattened_relation.append(self.get_id(o1, o2, context))
+        # Create composition atoms.
+        # This is different from the paper, here we add all possible compositions rather than deriving them from the state.
+        # TODO: Implement the paper version. This is likely too expensive.
+        object_indices = context.object_index_to_id.keys()
+        composition_relation = []
+        for o1 in object_indices:
+            for o2 in object_indices:
+                for o3 in object_indices:
+                    composition_relation.append(self.get_id(o1, o2, context))
+                    composition_relation.append(self.get_id(o2, o3, context))
+                    composition_relation.append(self.get_id(o1, o3, context))
+        assert self.composition_name not in encoding.flattened_relations
+        encoding.flattened_relations[self.composition_name] = composition_relation
+
+
+class ExpressiveGoalEncoder(ExpressiveEncoderBase):
+    """Expressive encoder for goal conditions.
+
+    This encoder transforms a goal condition (conjunctive condition of literals
+    that must be satisfied) into relations for the graph neural network.
+    It creates both goal-specific relations and marks which atoms are true/false
+    in the current state relative to the goal. In contrast to GoalEncoder, the
+    conjunctive goal is encoded using object pairs.
+    """
+
+    def __init__(self, suffix: str = '') -> None:
+        """Initialize the goal encoder.
+
+        Args:
+            suffix: Suffix to append to relation names to avoid conflicts.
+        """
+        super().__init__(suffix)
+
+    def get_relations(self, domain: mm.Domain) -> list[tuple[str, int]]:
+        """Get relations that this encoder will add for goal conditions.
+
+        Args:
+            domain: The PDDL domain containing predicate definitions.
+
+        Returns:
+            List of (relation_name, arity) pairs for goal predicates,
+            including both true and false variants.
+        """
+        # TODO: Do we want False and True here? With the extra expressiveness, should be unnecessary in most cases.
+        ignored_predicate_names = ['number']
+        predicates = [predicate for predicate in domain.get_predicates() if not predicate.get_name() in ignored_predicate_names]
+        relations = []
+        relations.extend([(self.prefix + self.get_relation_name_of_predicate(predicate, True, False), predicate.get_arity() * predicate.get_arity()) for predicate in predicates])
+        relations.extend([(self.prefix + self.get_relation_name_of_predicate(predicate, True, True), predicate.get_arity() * predicate.get_arity()) for predicate in predicates])
+        return relations
+
+    def encode(self, input_value: Any, state: mm.State, encoding: 'EncodedLists', context: 'EncodingContext') -> None:
+        assert isinstance(input_value, mm.GroundConjunctiveCondition), f'GoalEncoder expected a GroundConjunctiveCondition, got {type(input_value)}'
+        for literal in input_value:  # type: ignore
+            assert isinstance(literal, mm.GroundLiteral), 'Goal condition should contain ground literals.'
+            assert literal.get_polarity(), 'Only positive literals are supported.'
+            atom = literal.get_atom()
+            relation_name = self.get_relation_name_of_ground_atom(atom, state, True)
+            term_indices: list[int] = [obj.get_index() for obj in atom.get_terms()]
+            # Create the relation list if it does not already exist.
+            if relation_name not in encoding.flattened_relations:
+                flattened_relation = []
+                encoding.flattened_relations[relation_name] = flattened_relation
+            else:
+                flattened_relation = encoding.flattened_relations[relation_name]
+            # Add all possible pair combinations of the terms as arguments.
+            for o1 in term_indices:
+                for o2 in term_indices:
+                    flattened_relation.append(self.get_id(o1, o2, context))

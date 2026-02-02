@@ -43,6 +43,8 @@ class EncodedTensors:
         self.action_indices: torch.Tensor = torch.LongTensor()
         self.virtual_sizes: torch.Tensor = torch.LongTensor()
         self.virtual_indices: torch.Tensor = torch.LongTensor()
+        self.auxiliary_sizes: torch.Tensor = torch.LongTensor()
+        self.auxiliary_indices: torch.Tensor = torch.LongTensor()
 
 
 class EncodingContext():
@@ -55,22 +57,33 @@ class EncodingContext():
         self.object_index_to_id: dict[int, int] = { obj.get_index(): i + id_offset for i, obj in enumerate(objects) }
         self.action_ids: list[int] = []
         self.virtual_ids: list[int] = []
+        self.auxiliary_ids: dict[Any, int] = {}
+
+    def _get_next_id(self) -> int:
+        return self.id_offset + len(self.object_index_to_id) + len(self.action_ids) + len(self.virtual_ids) + len(self.auxiliary_ids)
 
     def get_object_id(self, object_index: int) -> int:
         return self.object_index_to_id[object_index]
 
     def new_action_id(self) -> int:
-        action_id = self.id_offset + len(self.object_index_to_id) + len(self.action_ids) + len(self.virtual_ids)
+        action_id = self._get_next_id()
         self.action_ids.append(action_id)
         return action_id
 
     def new_virtual_id(self) -> int:
-        virtual_id = self.id_offset + len(self.object_index_to_id) + len(self.action_ids) + len(self.virtual_ids)
+        virtual_id = self._get_next_id()
         self.virtual_ids.append(virtual_id)
         return virtual_id
 
     def new_or_existing_virtual_id(self) -> int:
         return self.virtual_ids[-1] if self.virtual_ids else self.new_virtual_id()
+
+    def new_or_existing_auxiliary_id(self, key: Any) -> int:
+        if key in self.auxiliary_ids:
+            return self.auxiliary_ids[key]
+        auxiliary_id = self._get_next_id()
+        self.auxiliary_ids[key] = auxiliary_id
+        return auxiliary_id
 
     def get_object_ids(self) -> list[int]:
         return list(self.object_index_to_id.values())
