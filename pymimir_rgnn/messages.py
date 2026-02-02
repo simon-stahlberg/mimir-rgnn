@@ -88,12 +88,16 @@ class AttentionMessages(MessageFunction):
 
     def __init__(self,
                  hparam_config: HyperparameterConfig,
-                 input_spec: tuple[Encoder, ...]):
+                 input_spec: tuple[Encoder, ...],
+                 num_heads: int = 8,
+                 num_layers: int = 2):
         """Initialize the attention message function.
 
         Args:
             hparam_config: The hyperparameter configuration containing embedding sizes.
             input_spec: The input specification to determine which relations exist.
+            num_heads: The number of attention heads in each Transformer encoder layer.
+            num_layers: The number of layers of the Transformer encoder.
         """
         super().__init__()
         self._embedding_size = hparam_config.embedding_size
@@ -109,14 +113,14 @@ class AttentionMessages(MessageFunction):
         # TransformerEncoderLayer for parallel message computation
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=hparam_config.embedding_size,
-            nhead=8,
+            nhead=num_heads,
             dim_feedforward=hparam_config.embedding_size,
             activation='relu',
             batch_first=True,
             dropout=0.0,
             layer_norm_eps=0.0
         )
-        self._transformer = nn.TransformerEncoder(encoder_layer, num_layers=2)
+        self._transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
 
     def setup(self, relations: dict[str, torch.Tensor]) -> None:
         """Pre-compute static parts that don't change across layers.
@@ -141,7 +145,6 @@ class AttentionMessages(MessageFunction):
         output_indices = []
 
         # Track offsets for each relation to map back later
-        relation_offsets = {}
         relation_offset = 0
 
         for relation_name, argument_indices in relations.items():
@@ -149,8 +152,7 @@ class AttentionMessages(MessageFunction):
                 continue
 
             arity = self._relation_arities[relation_name]
-            num_atoms = argument_indices.shape[0] // arity
-            relation_offsets[relation_name] = (relation_offset, num_atoms)
+            num_atoms = argument_indices.numel() // arity
             predicate_id = self._predicate_to_idx[relation_name]
 
             # Reshape to [num_atoms, arity]
@@ -159,7 +161,7 @@ class AttentionMessages(MessageFunction):
             # Pad to max_arity using index 0 (arbitrary object)
             if arity < self._max_sequence_length - 1:  # -1 because we add predicate token
                 padding_size = (self._max_sequence_length - 1) - arity
-                padding_indices = torch.zeros(num_atoms, padding_size, dtype=torch.long, device=device)
+                padding_indices = torch.zeros((num_atoms, padding_size), dtype=torch.long, device=device)
                 padded_indices = torch.cat([atom_indices, padding_indices], dim=1)
             else:
                 padded_indices = atom_indices
@@ -170,7 +172,7 @@ class AttentionMessages(MessageFunction):
             predicate_ids = torch.full((num_atoms,), predicate_id, dtype=torch.long, device=device)
             all_predicate_ids.append(predicate_ids)
 
-            # Padding masks - True for padding positions
+            # Padding masks -- True for padding positions
             sequence_length = arity + 1  # +1 for predicate token
             padding_mask = torch.zeros(num_atoms, self._max_sequence_length, dtype=torch.bool, device=device)
             if sequence_length < self._max_sequence_length:
@@ -194,7 +196,6 @@ class AttentionMessages(MessageFunction):
             'padding_masks': torch.cat(all_padding_masks, dim=0),  # [total_atoms, max_sequence_length]
             'message_indices': torch.cat(message_indices, dim=0),  # [total_messages]
             'output_indices': torch.cat(output_indices, dim=0),
-            'relation_offsets': relation_offsets,
             'total_atoms': relation_offset
         }
 
@@ -222,7 +223,7 @@ class AttentionMessages(MessageFunction):
 
         # Get all object embeddings in one go using pre-computed indices
         # Shape: [total_atoms, max_arity, embedding_size]
-        node_indices: torch.Tensor = self._cache['node_indices']  # type: ignore
+        node_indices: torch.Tensor = self._cache['node_indices']  # type: ignore, contains padding
         all_object_embeddings = torch.index_select(node_embeddings, 0, node_indices.view(-1))
         all_object_embeddings = all_object_embeddings.view(self._cache['total_atoms'], self._max_sequence_length - 1, self._embedding_size)  # type: ignore
 
@@ -235,15 +236,15 @@ class AttentionMessages(MessageFunction):
         # Shape: [total_atoms, max_sequence_length, embedding_size]
         sequence_embeddings = torch.cat([all_predicate_embeddings, all_object_embeddings], dim=1)
 
-        # Add positional embeddings - use full max_sequence_length
+        # TODO: This can be moved to setup/cache.
+        # Add positional embeddings -- use full max_sequence_length
         positions = torch.arange(self._max_sequence_length, device=sequence_embeddings.device)
         positional_embeddings = self._positional_embeddings(positions).unsqueeze(0)  # [1, max_sequence_length, embedding_size]
         sequence_embeddings = sequence_embeddings + positional_embeddings
 
         # Apply transformer to all sequences in one pass
         padding_masks: torch.Tensor = self._cache['padding_masks']  # type: ignore
-        transformed_embeddings = self._transformer.forward(sequence_embeddings, src_key_padding_mask=padding_masks)
-        transformed_embeddings = transformed_embeddings.view(-1, self._embedding_size)
+        transformed_embeddings = self._transformer.forward(sequence_embeddings, src_key_padding_mask=padding_masks).view(-1, self._embedding_size)
 
         # Extract object messages using pre-computed indices
         message_indices: torch.Tensor = self._cache['message_indices']  # type: ignore

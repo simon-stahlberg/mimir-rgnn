@@ -3,8 +3,8 @@ import torch
 
 from typing import Any
 
-from .utils import get_action_name, get_atom_name, get_effect_name, get_effect_relation_name, get_predicate_name, relations_to_tensors
 from .bases import Encoder, EncodedLists, EncodedTensors, EncodingContext
+from .utils import get_action_name, get_atom_name, get_effect_name, get_effect_relation_name, get_predicate_name, relations_to_tensors
 
 
 class StateEncoder(Encoder):
