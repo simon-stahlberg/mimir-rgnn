@@ -441,3 +441,31 @@ def test_curry_forward(domain_name: str):
     # Should produce the same results
     for val1, val2 in zip(curried_q_values[0], curried_q_values_2[0]):
         assert torch.allclose(val1, val2, atol=1e-6)
+
+
+@pytest.mark.parametrize("domain_name", [('blocks'), ('gripper')])
+def test_expressive_encoders(domain_name: str):
+    domain_path = DATA_DIR / domain_name / 'domain.pddl'
+    problem_path = DATA_DIR / domain_name / 'problem.pddl'
+    domain = mm.Domain(domain_path)
+    problem = mm.Problem(domain, problem_path)
+    hparam_config = HyperparameterConfig(
+        domain=domain,
+        num_layers=4,
+        embedding_size=8
+    )
+    input_spec = (ExpressiveStateEncoder(), ExpressiveGoalEncoder())
+    output_spec = [('value', ObjectsScalarDecoder(hparam_config))]
+    module_config = ModuleConfig(
+        aggregation_function=SmoothMaximumAggregation(),
+        message_function=PredicateMLPMessages(hparam_config, input_spec),
+        update_function=MLPUpdates(hparam_config)
+    )
+    model = RelationalGraphNeuralNetwork(hparam_config, module_config, input_spec, output_spec)  # type: ignore
+    assert model is not None
+    input = [(problem.get_initial_state(), problem.get_goal_condition())]
+    output = model.forward(input)
+    value = output.readout('value')
+    assert isinstance(value, torch.Tensor)
+    assert value.numel() == 1
+    assert not torch.isnan(value).any()

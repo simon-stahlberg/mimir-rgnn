@@ -23,6 +23,8 @@ class EncodedLists:
         self.action_indices: list[int] = []
         self.virtual_sizes: list[int] = []
         self.virtual_indices: list[int] = []
+        self.auxiliary_sizes: list[int] = []
+        self.auxiliary_indices: list[int] = []
 
 
 class EncodedTensors:
@@ -103,8 +105,14 @@ class EncodingContext():
     def get_virtual_count(self) -> int:
         return len(self.virtual_ids)
 
+    def get_auxiliary_ids(self) -> list[int]:
+        return list(self.auxiliary_ids.values())
+
+    def get_auxiliary_count(self) -> int:
+        return len(self.auxiliary_ids)
+
     def get_node_count(self) -> int:
-        return self.get_object_count() + self.get_action_count() + self.get_virtual_count()
+        return self.get_object_count() + self.get_action_count() + self.get_virtual_count() + self.get_auxiliary_count()
 
 
 class Encoder(ABC):

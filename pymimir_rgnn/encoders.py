@@ -316,15 +316,14 @@ def get_input_from_encoders(input: list[tuple], input_specification: tuple[Encod
         assert isinstance(instance, tuple), 'Input instance must be a tuple.'
         assert len(instance) == len(input_specification), 'Mismatch between the length of an input instance and the input specification.'
 
-        # Find the state encoder to get the state
+        # Find the state of the input
         state = None
-        for i, encoder in enumerate(input_specification):
-            if isinstance(encoder, StateEncoder):
-                state = instance[i]
-                assert isinstance(state, mm.State), f'Expected a State at position {i}, got {type(state)}'
+        for x in instance:
+            if isinstance(x, mm.State):
+                state = x
                 break
 
-        assert state is not None, 'Input specification must contain a StateEncoder.'
+        assert state is not None, 'Input must contain a State.'
 
         # Track nodes added for this instance
         context = EncodingContext(state.get_problem(), encoding_lists.node_count)
@@ -337,8 +336,12 @@ def get_input_from_encoders(input: list[tuple], input_specification: tuple[Encod
         # Update global encoding with instance results
         encoding_lists.object_indices.extend(context.get_object_ids())
         encoding_lists.action_indices.extend(context.get_action_ids())
+        encoding_lists.virtual_indices.extend(context.get_virtual_ids())
+        encoding_lists.auxiliary_indices.extend(context.get_auxiliary_ids())
         encoding_lists.object_sizes.append(context.get_object_count())
         encoding_lists.action_sizes.append(context.get_action_count())
+        encoding_lists.virtual_sizes.append(context.get_virtual_count())
+        encoding_lists.auxiliary_sizes.append(context.get_auxiliary_count())
         encoding_lists.node_sizes.append(context.get_node_count())
         encoding_lists.node_count += context.get_node_count()
 
@@ -351,6 +354,10 @@ def get_input_from_encoders(input: list[tuple], input_specification: tuple[Encod
     encoding_tensors.object_sizes = torch.tensor(encoding_lists.object_sizes, dtype=torch.int, device=device, requires_grad=False)
     encoding_tensors.action_indices = torch.tensor(encoding_lists.action_indices, dtype=torch.int, device=device, requires_grad=False)
     encoding_tensors.action_sizes = torch.tensor(encoding_lists.action_sizes, dtype=torch.int, device=device, requires_grad=False)
+    encoding_tensors.virtual_indices = torch.tensor(encoding_lists.virtual_indices, dtype=torch.int, device=device, requires_grad=False)
+    encoding_tensors.virtual_sizes = torch.tensor(encoding_lists.virtual_sizes, dtype=torch.int, device=device, requires_grad=False)
+    encoding_tensors.auxiliary_indices = torch.tensor(encoding_lists.auxiliary_indices, dtype=torch.int, device=device, requires_grad=False)
+    encoding_tensors.auxiliary_sizes = torch.tensor(encoding_lists.auxiliary_sizes, dtype=torch.int, device=device, requires_grad=False)
     return encoding_tensors
 
 
@@ -378,9 +385,9 @@ class ExpressiveEncoderBase(Encoder):
 class ExpressiveStateEncoder(ExpressiveEncoderBase):
     """Expressive encoder for planning states.
 
-    This encoder transforms a planning state (which contains atoms/facts that are
-    currently true) into nodes and relations for the graph neural network.
-    In contrast to StateEncoder, pair of objects become nodes, and atoms become
+    This encoder transforms a planning state (which contains atoms — facts that
+    are currently true) into nodes and relations for the graph neural network.
+    In contrast to StateEncoder, pairs of objects become nodes, and atoms become
     relations between these pairs.
     """
 
@@ -402,11 +409,9 @@ class ExpressiveStateEncoder(ExpressiveEncoderBase):
         Returns:
             List of (relation_name, arity) pairs for all predicates except 'number'.
         """
-        def get_expressive_relation(predicate: mm.Predicate):
-            return (self.get_relation_name_of_predicate(predicate, False, True), predicate.get_arity() * predicate.get_arity())
         ignored_predicate_names = ['number']
         predicates = [predicate for predicate in domain.get_predicates() if not predicate.get_name() in ignored_predicate_names]
-        relations = [get_expressive_relation(predicate) for predicate in predicates]
+        relations = [(self.get_relation_name_of_predicate(predicate, False, True), predicate.get_arity() * predicate.get_arity()) for predicate in predicates]
         relations.append((self.composition_name, 3))
         return relations
 
@@ -418,7 +423,7 @@ class ExpressiveStateEncoder(ExpressiveEncoderBase):
             term_indices = [obj.get_index() for obj in atom.get_terms()]
             # Create the relation list if it does not already exist.
             if relation_name not in encoding.flattened_relations:
-                flattened_relation = []
+                flattened_relation: list[int] = []
                 encoding.flattened_relations[relation_name] = flattened_relation
             else:
                 flattened_relation = encoding.flattened_relations[relation_name]
@@ -444,10 +449,10 @@ class ExpressiveStateEncoder(ExpressiveEncoderBase):
 class ExpressiveGoalEncoder(ExpressiveEncoderBase):
     """Expressive encoder for goal conditions.
 
-    This encoder transforms a goal condition (conjunctive condition of literals
-    that must be satisfied) into relations for the graph neural network.
-    It creates both goal-specific relations and marks which atoms are true/false
-    in the current state relative to the goal. In contrast to GoalEncoder, the
+    This encoder transforms a goal condition (a conjunctive condition of
+    literals that must be satisfied) into relations for the graph neural
+    network. It creates goal-specific relations and marks which atoms are true
+    or false in the current state relative to the goal. Unlike GoalEncoder, the
     conjunctive goal is encoded using object pairs.
     """
 
@@ -469,12 +474,11 @@ class ExpressiveGoalEncoder(ExpressiveEncoderBase):
             List of (relation_name, arity) pairs for goal predicates,
             including both true and false variants.
         """
-        # TODO: Do we want False and True here? With the extra expressiveness, should be unnecessary in most cases.
         ignored_predicate_names = ['number']
         predicates = [predicate for predicate in domain.get_predicates() if not predicate.get_name() in ignored_predicate_names]
         relations = []
-        relations.extend([(self.prefix + self.get_relation_name_of_predicate(predicate, True, False), predicate.get_arity() * predicate.get_arity()) for predicate in predicates])
-        relations.extend([(self.prefix + self.get_relation_name_of_predicate(predicate, True, True), predicate.get_arity() * predicate.get_arity()) for predicate in predicates])
+        relations.extend([(self.get_relation_name_of_predicate(predicate, True, False), predicate.get_arity() * predicate.get_arity()) for predicate in predicates])
+        relations.extend([(self.get_relation_name_of_predicate(predicate, True, True), predicate.get_arity() * predicate.get_arity()) for predicate in predicates])
         return relations
 
     def encode(self, input_value: Any, state: mm.State, encoding: 'EncodedLists', context: 'EncodingContext') -> None:
@@ -487,7 +491,7 @@ class ExpressiveGoalEncoder(ExpressiveEncoderBase):
             term_indices: list[int] = [obj.get_index() for obj in atom.get_terms()]
             # Create the relation list if it does not already exist.
             if relation_name not in encoding.flattened_relations:
-                flattened_relation = []
+                flattened_relation: list[int] = []
                 encoding.flattened_relations[relation_name] = flattened_relation
             else:
                 flattened_relation = encoding.flattened_relations[relation_name]

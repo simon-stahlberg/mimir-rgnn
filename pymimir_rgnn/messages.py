@@ -222,8 +222,9 @@ class AttentionMessages(MessageFunction):
         assert self._cache['total_atoms'] > 0, "No atoms in cache. Did you provide valid relations?"
 
         # Get all object embeddings in one go using pre-computed indices
+        # The cached node_indices includes padding indices as well
         # Shape: [total_atoms, max_arity, embedding_size]
-        node_indices: torch.Tensor = self._cache['node_indices']  # type: ignore, contains padding
+        node_indices: torch.Tensor = self._cache['node_indices']  # type: ignore
         all_object_embeddings = torch.index_select(node_embeddings, 0, node_indices.view(-1))
         all_object_embeddings = all_object_embeddings.view(self._cache['total_atoms'], self._max_sequence_length - 1, self._embedding_size)  # type: ignore
 
