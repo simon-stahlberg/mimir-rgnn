@@ -442,8 +442,10 @@ class ExpressiveStateEncoder(ExpressiveEncoderBase):
                     composition_relation.append(self.get_id(o1, o2, context))
                     composition_relation.append(self.get_id(o2, o3, context))
                     composition_relation.append(self.get_id(o1, o3, context))
-        assert self.composition_name not in encoding.flattened_relations
-        encoding.flattened_relations[self.composition_name] = composition_relation
+        if self.composition_name in encoding.flattened_relations:
+            encoding.flattened_relations[self.composition_name].extend(composition_relation)
+        else:
+            encoding.flattened_relations[self.composition_name] = composition_relation
 
 
 class ExpressiveGoalEncoder(ExpressiveEncoderBase):
