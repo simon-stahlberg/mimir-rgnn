@@ -52,7 +52,7 @@ class ActionEmbeddingDecoder(Decoder):
     action representations learned by the graph neural network.
     """
 
-    def forward(self, node_embeddings: torch.Tensor, encoding: 'EncodedTensors') -> torch.Tensor:
+    def forward(self, node_embeddings: torch.Tensor, encoding: 'EncodedTensors') -> tuple[torch.Tensor, ...]:
         """Extract action node embeddings.
 
         Args:
@@ -60,9 +60,9 @@ class ActionEmbeddingDecoder(Decoder):
             encoding: The encoding information containing action indices.
 
         Returns:
-            Tensor containing the embeddings of all action nodes.
+            Tuple of tensors, each containing the embeddings of all action nodes.
         """
-        return node_embeddings.index_select(0, encoding.action_indices)
+        return node_embeddings.index_select(0, encoding.action_indices).split_with_sizes(encoding.action_sizes.tolist())
 
 
 class ObjectsScalarDecoder(Decoder):
@@ -107,7 +107,7 @@ class ObjectsEmbeddingDecoder(Decoder):
     object representations learned by the graph neural network.
     """
 
-    def forward(self, node_embeddings: torch.Tensor, encoding: 'EncodedTensors') -> torch.Tensor:
+    def forward(self, node_embeddings: torch.Tensor, encoding: 'EncodedTensors') -> tuple[torch.Tensor, ...]:
         """Extract object node embeddings.
 
         Args:
@@ -115,6 +115,6 @@ class ObjectsEmbeddingDecoder(Decoder):
             encoding: The encoding information containing object indices.
 
         Returns:
-            Tensor containing the embeddings of all object nodes.
+            Tuple of tensors, each containing the embeddings of object nodes for an input instance.
         """
-        return node_embeddings.index_select(0, encoding.object_indices)
+        return node_embeddings.index_select(0, encoding.object_indices).split_with_sizes(encoding.object_sizes.tolist())
