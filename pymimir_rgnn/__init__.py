@@ -55,7 +55,7 @@ from .bases import AggregationFunction, MessageFunction, UpdateFunction, Encoder
 from .configs import HyperparameterConfig, ModuleConfig
 from .decoders import ActionScalarDecoder, ActionEmbeddingDecoder, ObjectsScalarDecoder, ObjectsEmbeddingDecoder
 from .encoders import StateEncoder, GoalEncoder, GroundActionsEncoder, TransitionEffectsEncoder, ExpressiveStateEncoder, ExpressiveGoalEncoder
-from .messages import PredicateMLPMessages, AttentionMessages
+from .messages import PredicateMLPMessages, AttentionMessages, AttentionMessagesBase
 from .model import ForwardState, RelationalGraphNeuralNetwork
 from .modules import MLP, SumReadout
 from .updates import MLPUpdates
@@ -65,6 +65,7 @@ __all__ = [
     "ActionScalarDecoder",
     "AggregationFunction",
     "AttentionMessages",
+    "AttentionMessagesBase",
     "Decoder",
     "Encoder",
     "ExpressiveGoalEncoder",
