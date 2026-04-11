@@ -288,6 +288,16 @@ def get_relations_from_encoders(domain: mm.Domain, input_specification: tuple[En
     return relations_list
 
 
+def _make_size_tensor(sizes: list[int], device: torch.device) -> torch.Tensor:
+    return torch.tensor(sizes, dtype=torch.int, device=device, requires_grad=False)
+
+
+def _make_group_ends(size_tensor: torch.Tensor) -> torch.Tensor:
+    if size_tensor.numel() == 0:
+        return torch.empty(0, dtype=size_tensor.dtype, device=size_tensor.device)
+    return size_tensor.cumsum(0) - 1
+
+
 def get_input_from_encoders(input: list[tuple], input_specification: tuple[Encoder, ...], device: torch.device) -> EncodedTensors:
     """Encode input using a collection of encoders.
 
@@ -349,15 +359,25 @@ def get_input_from_encoders(input: list[tuple], input_specification: tuple[Encod
     encoding_tensors = EncodedTensors()
     encoding_tensors.flattened_relations = relations_to_tensors(encoding_lists.flattened_relations, device)
     encoding_tensors.node_count = encoding_lists.node_count
-    encoding_tensors.node_sizes = torch.tensor(encoding_lists.node_sizes, dtype=torch.int, device=device, requires_grad=False)
+    encoding_tensors.node_sizes_list = tuple(encoding_lists.node_sizes)
+    encoding_tensors.node_sizes = _make_size_tensor(encoding_lists.node_sizes, device)
+    encoding_tensors.node_group_ends = _make_group_ends(encoding_tensors.node_sizes)
     encoding_tensors.object_indices = torch.tensor(encoding_lists.object_indices, dtype=torch.int, device=device, requires_grad=False)
-    encoding_tensors.object_sizes = torch.tensor(encoding_lists.object_sizes, dtype=torch.int, device=device, requires_grad=False)
+    encoding_tensors.object_sizes_list = tuple(encoding_lists.object_sizes)
+    encoding_tensors.object_sizes = _make_size_tensor(encoding_lists.object_sizes, device)
+    encoding_tensors.object_group_ends = _make_group_ends(encoding_tensors.object_sizes)
     encoding_tensors.action_indices = torch.tensor(encoding_lists.action_indices, dtype=torch.int, device=device, requires_grad=False)
-    encoding_tensors.action_sizes = torch.tensor(encoding_lists.action_sizes, dtype=torch.int, device=device, requires_grad=False)
+    encoding_tensors.action_sizes_list = tuple(encoding_lists.action_sizes)
+    encoding_tensors.action_sizes = _make_size_tensor(encoding_lists.action_sizes, device)
+    encoding_tensors.action_group_ends = _make_group_ends(encoding_tensors.action_sizes)
     encoding_tensors.virtual_indices = torch.tensor(encoding_lists.virtual_indices, dtype=torch.int, device=device, requires_grad=False)
-    encoding_tensors.virtual_sizes = torch.tensor(encoding_lists.virtual_sizes, dtype=torch.int, device=device, requires_grad=False)
+    encoding_tensors.virtual_sizes_list = tuple(encoding_lists.virtual_sizes)
+    encoding_tensors.virtual_sizes = _make_size_tensor(encoding_lists.virtual_sizes, device)
+    encoding_tensors.virtual_group_ends = _make_group_ends(encoding_tensors.virtual_sizes)
     encoding_tensors.auxiliary_indices = torch.tensor(encoding_lists.auxiliary_indices, dtype=torch.int, device=device, requires_grad=False)
-    encoding_tensors.auxiliary_sizes = torch.tensor(encoding_lists.auxiliary_sizes, dtype=torch.int, device=device, requires_grad=False)
+    encoding_tensors.auxiliary_sizes_list = tuple(encoding_lists.auxiliary_sizes)
+    encoding_tensors.auxiliary_sizes = _make_size_tensor(encoding_lists.auxiliary_sizes, device)
+    encoding_tensors.auxiliary_group_ends = _make_group_ends(encoding_tensors.auxiliary_sizes)
     return encoding_tensors
 
 

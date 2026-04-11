@@ -39,13 +39,23 @@ class EncodedTensors:
         self.flattened_relations: dict[str, torch.Tensor] = {}
         self.node_count: int = 0
         self.node_sizes: torch.Tensor = torch.LongTensor()
+        self.node_sizes_list: tuple[int, ...] = ()
+        self.node_group_ends: torch.Tensor = torch.LongTensor()
         self.object_sizes: torch.Tensor = torch.LongTensor()
+        self.object_sizes_list: tuple[int, ...] = ()
+        self.object_group_ends: torch.Tensor = torch.LongTensor()
         self.object_indices: torch.Tensor = torch.LongTensor()
         self.action_sizes: torch.Tensor = torch.LongTensor()
+        self.action_sizes_list: tuple[int, ...] = ()
+        self.action_group_ends: torch.Tensor = torch.LongTensor()
         self.action_indices: torch.Tensor = torch.LongTensor()
         self.virtual_sizes: torch.Tensor = torch.LongTensor()
+        self.virtual_sizes_list: tuple[int, ...] = ()
+        self.virtual_group_ends: torch.Tensor = torch.LongTensor()
         self.virtual_indices: torch.Tensor = torch.LongTensor()
         self.auxiliary_sizes: torch.Tensor = torch.LongTensor()
+        self.auxiliary_sizes_list: tuple[int, ...] = ()
+        self.auxiliary_group_ends: torch.Tensor = torch.LongTensor()
         self.auxiliary_indices: torch.Tensor = torch.LongTensor()
 
 

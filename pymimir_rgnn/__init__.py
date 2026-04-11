@@ -56,6 +56,7 @@ from .configs import HyperparameterConfig, ModuleConfig
 from .decoders import ActionScalarDecoder, ActionEmbeddingDecoder, ObjectsScalarDecoder, ObjectsEmbeddingDecoder
 from .encoders import StateEncoder, GoalEncoder, GroundActionsEncoder, TransitionEffectsEncoder, ExpressiveStateEncoder, ExpressiveGoalEncoder
 from .messages import PredicateMLPMessages, AttentionMessages, AttentionMessagesBase
+from .latency import ForwardReadoutLatency, LatencyStats, measure_forward_readout_latency
 from .model import ForwardState, RelationalGraphNeuralNetwork
 from .modules import MLP, SumReadout
 from .updates import MLPUpdates
@@ -75,11 +76,14 @@ __all__ = [
     "GroundActionsEncoder",
     "HardMaximumAggregation",
     "HyperparameterConfig",
+    "ForwardReadoutLatency",
+    "LatencyStats",
     "MeanAggregation",
     "MessageFunction",
     "MLP",
     "MLPUpdates",
     "ModuleConfig",
+    "measure_forward_readout_latency",
     "ObjectsEmbeddingDecoder",
     "ObjectsScalarDecoder",
     "PredicateMLPMessages",

@@ -72,6 +72,40 @@ model = rgnn.RelationalGraphNeuralNetwork(hparam_config, module_config, input_sp
 # q_values = outputs.readout('q_values')
 ```
 
+## Benchmarking Latency
+
+The package exposes a utility for measuring the full `model.forward(...).readout(...)`
+path and a phase breakdown for encoding, message passing, and readout:
+
+```python
+latency = rgnn.measure_forward_readout_latency(
+        model,
+        [(state, actions, goal)],
+        'q_values',
+        iterations=100,
+        warmup_iterations=20,
+)
+print(latency.to_dict())
+```
+
+There is also a small command-line benchmark wrapper in
+[scripts/benchmark_forward_latency.py](scripts/benchmark_forward_latency.py):
+
+```bash
+python scripts/benchmark_forward_latency.py \
+    --domain-path tests/data/gripper/domain.pddl \
+    --problem-path tests/data/gripper/problem.pddl \
+    --aggregation hardmax \
+    --embedding-size 32 \
+    --num-layers 6 \
+    --global-readout \
+    --normalize-updates \
+    --device cuda
+```
+
+On CUDA, the utility synchronizes before and after each timed section so the
+reported latencies reflect actual device execution time.
+
 ## API Overview
 
 ### Core Components
@@ -105,7 +139,7 @@ The main R-GNN model class that:
 Inherit from `Encoder` base class to define custom input processing:
 
 - **`StateEncoder`**: Current state of the planning problem
-- **`GoalEncoder`**: Goal specification  
+- **`GoalEncoder`**: Goal specification
 - **`GroundActionsEncoder`**: Available ground actions
 - **`TransitionEffectsEncoder`**: Action effects and transitions
 
@@ -117,7 +151,7 @@ Inherit from `Decoder` base class to define custom output readout:
 input_spec = (StateEncoder(), GroundActionsEncoder(), GoalEncoder())
 output_spec = [
     ('actor', ActionScalarDecoder(hparam_config)),
-    ('critic', ObjectsScalarDecoder(hparam_config)), 
+    ('critic', ObjectsScalarDecoder(hparam_config)),
     ('embeddings', ActionEmbeddingDecoder())
 ]
 ```
