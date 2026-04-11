@@ -149,7 +149,7 @@ class RelationalLayerStackModule(nn.Module):
         """
         self._message.setup(input.flattened_relations)
         device = input.node_sizes.device
-        node_embeddings: torch.Tensor = torch.zeros((input.node_count, self._config.embedding_size), dtype=torch.float, requires_grad=True, device=device)
+        node_embeddings: torch.Tensor = torch.zeros((input.node_count, self._config.embedding_size), dtype=torch.float, device=device)
         for iteration in range(self._config.num_layers):
             next_node_embeddings: torch.Tensor = self._relation_network(node_embeddings, input.flattened_relations)
             if self._config.normalize_updates:

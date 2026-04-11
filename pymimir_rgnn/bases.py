@@ -66,24 +66,26 @@ class EncodingContext():
 
         # Map from object indices to global node IDs
         objects = problem.get_objects() + problem.get_domain().get_constants()
-        self.object_index_to_id: dict[int, int] = { obj.get_index(): i + id_offset for i, obj in enumerate(objects) }
+        self._object_ids: list[int] = [i + id_offset for i in range(len(objects))]
+        self.object_index_to_id: dict[int, int] = { obj.get_index(): object_id for obj, object_id in zip(objects, self._object_ids) }
+        self._next_dynamic_id = id_offset + len(self._object_ids)
         self.action_ids: list[int] = []
         self.virtual_ids: list[int] = []
         self.auxiliary_ids: dict[Any, int] = {}
-
-    def _get_next_id(self) -> int:
-        return self.id_offset + len(self.object_index_to_id) + len(self.action_ids) + len(self.virtual_ids) + len(self.auxiliary_ids)
+        self._auxiliary_id_values: list[int] = []
 
     def get_object_id(self, object_index: int) -> int:
         return self.object_index_to_id[object_index]
 
     def new_action_id(self) -> int:
-        action_id = self._get_next_id()
+        action_id = self._next_dynamic_id
+        self._next_dynamic_id += 1
         self.action_ids.append(action_id)
         return action_id
 
     def new_virtual_id(self) -> int:
-        virtual_id = self._get_next_id()
+        virtual_id = self._next_dynamic_id
+        self._next_dynamic_id += 1
         self.virtual_ids.append(virtual_id)
         return virtual_id
 
@@ -93,15 +95,17 @@ class EncodingContext():
     def new_or_existing_auxiliary_id(self, key: Any) -> int:
         if key in self.auxiliary_ids:
             return self.auxiliary_ids[key]
-        auxiliary_id = self._get_next_id()
+        auxiliary_id = self._next_dynamic_id
+        self._next_dynamic_id += 1
         self.auxiliary_ids[key] = auxiliary_id
+        self._auxiliary_id_values.append(auxiliary_id)
         return auxiliary_id
 
     def get_object_ids(self) -> list[int]:
-        return list(self.object_index_to_id.values())
+        return self._object_ids
 
     def get_object_count(self) -> int:
-        return len(self.object_index_to_id)
+        return len(self._object_ids)
 
     def get_action_ids(self) -> list[int]:
         return self.action_ids
@@ -116,13 +120,13 @@ class EncodingContext():
         return len(self.virtual_ids)
 
     def get_auxiliary_ids(self) -> list[int]:
-        return list(self.auxiliary_ids.values())
+        return self._auxiliary_id_values
 
     def get_auxiliary_count(self) -> int:
         return len(self.auxiliary_ids)
 
     def get_node_count(self) -> int:
-        return self.get_object_count() + self.get_action_count() + self.get_virtual_count() + self.get_auxiliary_count()
+        return self._next_dynamic_id - self.id_offset
 
 
 class Encoder(ABC):
