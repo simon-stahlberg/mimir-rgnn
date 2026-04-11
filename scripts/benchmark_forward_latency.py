@@ -33,6 +33,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument('--batch-size', type=int, default=1, help='Number of identical instances in the batch.')
     parser.add_argument('--iterations', type=int, default=100, help='Number of measured iterations.')
     parser.add_argument('--warmup-iterations', type=int, default=20, help='Number of warmup iterations.')
+    parser.add_argument('--trials', type=int, default=3, help='Number of repeated benchmark trials.')
     parser.add_argument(
         '--mode',
         choices=('inference', 'training'),
@@ -58,6 +59,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument('--residual-updates', action='store_true', default=True, help='Enable residual updates.')
     parser.add_argument('--no-residual-updates', dest='residual_updates', action='store_false', help='Disable residual updates.')
     parser.add_argument('--binarize-updates', action='store_true', help='Enable binarized updates.')
+    parser.add_argument('--cuda-events', dest='use_cuda_events', action='store_true', default=None, help='Use CUDA event timing for compute and readout sections when running on CUDA.')
+    parser.add_argument('--no-cuda-events', dest='use_cuda_events', action='store_false', help='Disable CUDA event timing and use synchronized wall-clock timing for all sections.')
     return parser.parse_args()
 
 
@@ -132,7 +135,9 @@ def main() -> int:
         readouts,
         iterations=args.iterations,
         warmup_iterations=args.warmup_iterations,
+        trials=args.trials,
         mode=args.mode,
+        use_cuda_events=args.use_cuda_events,
     )
 
     print(json.dumps(latency.to_dict(), indent=2, sort_keys=True))

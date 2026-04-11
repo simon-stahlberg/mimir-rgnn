@@ -31,10 +31,20 @@ def test_measure_forward_readout_latency() -> None:
         'q_values',
         iterations=2,
         warmup_iterations=1,
+        trials=2,
+        use_cuda_events=True,
     )
     assert latency.device_type == model.get_device().type
+    assert latency.device_name is None
     assert latency.readout_names == ('q_values',)
-    assert latency.total.num_iterations == 2
-    assert latency.encode.num_iterations == 2
-    assert latency.compute.num_iterations == 2
-    assert latency.readout.num_iterations == 2
+    assert latency.trials == 2
+    assert latency.timers == {
+        'total': 'wall_clock',
+        'encode': 'wall_clock',
+        'compute': 'wall_clock',
+        'readout': 'wall_clock',
+    }
+    assert latency.total.num_iterations == 4
+    assert latency.encode.num_iterations == 4
+    assert latency.compute.num_iterations == 4
+    assert latency.readout.num_iterations == 4

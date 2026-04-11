@@ -66,5 +66,9 @@ class SumReadout(nn.Module):
         if group_ends is None:
             group_ends = node_sizes.cumsum(0) - 1
         cumsum_states = node_embeddings.cumsum(0).index_select(0, group_ends)
-        aggregated_embeddings = torch.cat((cumsum_states[0].view(1, -1), cumsum_states[1:] - cumsum_states[0:-1]))
+        if cumsum_states.shape[0] == 0:
+            aggregated_embeddings = cumsum_states
+        else:
+            aggregated_embeddings = cumsum_states.clone()
+            aggregated_embeddings[1:] -= cumsum_states[:-1]
         return self._value(aggregated_embeddings)

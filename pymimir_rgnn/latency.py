@@ -9,6 +9,7 @@ from .model import RelationalGraphNeuralNetwork
 
 
 BenchmarkMode = Literal['inference', 'training']
+TimerKind = Literal['wall_clock', 'cuda_event']
 
 
 @dataclass(frozen=True)
@@ -58,8 +59,11 @@ class ForwardReadoutLatency:
 
     mode: BenchmarkMode
     device_type: str
+    device_name: str | None
     readout_names: tuple[str, ...]
     warmup_iterations: int
+    trials: int
+    timers: dict[str, TimerKind]
     total: LatencyStats
     encode: LatencyStats
     compute: LatencyStats
@@ -70,8 +74,11 @@ class ForwardReadoutLatency:
         return {
             'mode': self.mode,
             'device_type': self.device_type,
+            'device_name': self.device_name,
             'readout_names': self.readout_names,
             'warmup_iterations': self.warmup_iterations,
+            'trials': self.trials,
+            'timers': self.timers,
             'total': self.total.to_dict(),
             'encode': self.encode.to_dict(),
             'compute': self.compute.to_dict(),
@@ -96,26 +103,61 @@ def _context_for_mode(mode: BenchmarkMode) -> Callable[[], Any]:
     return torch.inference_mode if mode == 'inference' else torch.enable_grad
 
 
+def _resolve_section_timer(device: torch.device, use_cuda_events: bool) -> TimerKind:
+    return 'cuda_event' if use_cuda_events and device.type == 'cuda' else 'wall_clock'
+
+
+def _measure_operation_ms(
+    operation: Callable[[], Any],
+    *,
+    device: torch.device,
+    synchronize: bool,
+    timer: TimerKind,
+) -> float:
+    if timer == 'cuda_event':
+        assert device.type == 'cuda', 'CUDA event timing requires a CUDA device.'
+        _synchronize(device, synchronize)
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        start_event.record()
+        operation()
+        end_event.record()
+        end_event.synchronize()
+        return float(start_event.elapsed_time(end_event))
+
+    _synchronize(device, synchronize)
+    start = time.perf_counter()
+    operation()
+    _synchronize(device, synchronize)
+    return (time.perf_counter() - start) * 1000.0
+
+
 def _measure_samples(
     operation: Callable[[], Any],
     *,
     iterations: int,
     warmup_iterations: int,
+    trials: int,
     mode: BenchmarkMode,
     device: torch.device,
     synchronize: bool,
+    timer: TimerKind,
 ) -> tuple[float, ...]:
     context_factory = _context_for_mode(mode)
     with context_factory():
-        for _ in range(warmup_iterations):
-            operation()
         samples_ms: list[float] = []
-        for _ in range(iterations):
-            _synchronize(device, synchronize)
-            start = time.perf_counter()
-            operation()
-            _synchronize(device, synchronize)
-            samples_ms.append((time.perf_counter() - start) * 1000.0)
+        for _ in range(trials):
+            for _ in range(warmup_iterations):
+                operation()
+            for _ in range(iterations):
+                samples_ms.append(
+                    _measure_operation_ms(
+                        operation,
+                        device=device,
+                        synchronize=synchronize,
+                        timer=timer,
+                    )
+                )
     return tuple(samples_ms)
 
 
@@ -125,23 +167,29 @@ def _measure_prepared_samples(
     *,
     iterations: int,
     warmup_iterations: int,
+    trials: int,
     mode: BenchmarkMode,
     device: torch.device,
     synchronize: bool,
+    timer: TimerKind,
 ) -> tuple[float, ...]:
     context_factory = _context_for_mode(mode)
     with context_factory():
-        for _ in range(warmup_iterations):
-            prepared = prepare()
-            operation(prepared)
         samples_ms: list[float] = []
-        for _ in range(iterations):
-            prepared = prepare()
-            _synchronize(device, synchronize)
-            start = time.perf_counter()
-            operation(prepared)
-            _synchronize(device, synchronize)
-            samples_ms.append((time.perf_counter() - start) * 1000.0)
+        for _ in range(trials):
+            for _ in range(warmup_iterations):
+                prepared = prepare()
+                operation(prepared)
+            for _ in range(iterations):
+                prepared = prepare()
+                samples_ms.append(
+                    _measure_operation_ms(
+                        lambda: operation(prepared),
+                        device=device,
+                        synchronize=synchronize,
+                        timer=timer,
+                    )
+                )
     return tuple(samples_ms)
 
 
@@ -156,8 +204,10 @@ def measure_forward_readout_latency(
     *,
     iterations: int = 100,
     warmup_iterations: int = 20,
+    trials: int = 1,
     mode: BenchmarkMode = 'inference',
     synchronize: bool | None = None,
+    use_cuda_events: bool | None = None,
 ) -> ForwardReadoutLatency:
     """Measure latency of the end-to-end forward and readout path.
 
@@ -171,18 +221,26 @@ def measure_forward_readout_latency(
         readout_names: One or more readout names to evaluate after the forward pass.
         iterations: Number of measured iterations.
         warmup_iterations: Number of warmup iterations to run before timing.
+        trials: Number of repeated benchmark trials. Each trial gets its own warmup.
         mode: Whether to benchmark inference or training-style forward passes.
         synchronize: Whether to synchronize the device before and after each timed section.
             Defaults to True on CUDA and False otherwise.
+        use_cuda_events: Whether to use CUDA events for the compute and readout sections
+            on CUDA devices. End-to-end and encode timing remain synchronized wall-clock
+            so they include Python and host-side overhead.
 
     Returns:
         Summary statistics for total, encode, compute, and readout latencies.
     """
     assert iterations > 0, 'iterations must be positive.'
     assert warmup_iterations >= 0, 'warmup_iterations must be non-negative.'
+    assert trials > 0, 'trials must be positive.'
     normalized_readout_names = _normalize_readout_names(readout_names)
     device = model.get_device()
     should_synchronize = device.type == 'cuda' if synchronize is None else synchronize
+    should_use_cuda_events = device.type == 'cuda' if use_cuda_events is None else use_cuda_events
+    compute_timer = _resolve_section_timer(device, should_use_cuda_events)
+    readout_timer = _resolve_section_timer(device, should_use_cuda_events)
     previous_training_mode = model.training
     if mode == 'inference':
         model.eval()
@@ -193,18 +251,22 @@ def measure_forward_readout_latency(
             lambda: _run_readouts(model.forward(x), normalized_readout_names),
             iterations=iterations,
             warmup_iterations=warmup_iterations,
+            trials=trials,
             mode=mode,
             device=device,
             synchronize=should_synchronize,
+            timer='wall_clock',
         )
 
         encode_samples = _measure_samples(
             lambda: model.curry_forward(x),
             iterations=iterations,
             warmup_iterations=warmup_iterations,
+            trials=trials,
             mode=mode,
             device=device,
             synchronize=should_synchronize,
+            timer='wall_clock',
         )
 
         curried_forward = model.curry_forward(x)
@@ -212,9 +274,11 @@ def measure_forward_readout_latency(
             curried_forward,
             iterations=iterations,
             warmup_iterations=warmup_iterations,
+            trials=trials,
             mode=mode,
             device=device,
             synchronize=should_synchronize,
+            timer=compute_timer,
         )
 
         readout_samples = _measure_prepared_samples(
@@ -222,9 +286,11 @@ def measure_forward_readout_latency(
             lambda forward_state: _run_readouts(forward_state, normalized_readout_names),
             iterations=iterations,
             warmup_iterations=warmup_iterations,
+            trials=trials,
             mode=mode,
             device=device,
             synchronize=should_synchronize,
+            timer=readout_timer,
         )
     finally:
         model.train(previous_training_mode)
@@ -232,8 +298,16 @@ def measure_forward_readout_latency(
     return ForwardReadoutLatency(
         mode=mode,
         device_type=device.type,
+        device_name=torch.cuda.get_device_name(device) if device.type == 'cuda' else None,
         readout_names=normalized_readout_names,
         warmup_iterations=warmup_iterations,
+        trials=trials,
+        timers={
+            'total': 'wall_clock',
+            'encode': 'wall_clock',
+            'compute': compute_timer,
+            'readout': readout_timer,
+        },
         total=LatencyStats.from_samples(total_samples),
         encode=LatencyStats.from_samples(encode_samples),
         compute=LatencyStats.from_samples(compute_samples),

@@ -7,6 +7,14 @@ from .bases import Encoder, EncodedLists, EncodedTensors, EncodingContext
 from .utils import get_action_name, get_atom_name, get_effect_name, get_effect_relation_name, get_predicate_name, relations_to_tensors
 
 
+def _extend_relation(flattened_relations: dict[str, list[int]], relation_name: str, relation_terms: list[int]) -> None:
+    existing_terms = flattened_relations.get(relation_name)
+    if existing_terms is None:
+        flattened_relations[relation_name] = relation_terms
+    else:
+        existing_terms.extend(relation_terms)
+
+
 class StateEncoder(Encoder):
     """Encoder for planning states.
 
@@ -45,10 +53,7 @@ class StateEncoder(Encoder):
         for atom in input_value.get_atoms():
             relation_name = get_atom_name(atom, state, False, self.suffix)
             object_indices: list[int] = [context.get_object_id(obj.get_index()) for obj in atom.get_terms()]
-            if relation_name not in encoding.flattened_relations:
-                encoding.flattened_relations[relation_name] = object_indices
-            else:
-                encoding.flattened_relations[relation_name].extend(object_indices)
+            _extend_relation(encoding.flattened_relations, relation_name, object_indices)
 
 
 class GoalEncoder(Encoder):
@@ -96,10 +101,7 @@ class GoalEncoder(Encoder):
             atom = literal.get_atom()
             relation_name = get_atom_name(atom, state, True, self.suffix)
             object_indices: list[int] = [context.get_object_id(obj.get_index()) for obj in atom.get_terms()]
-            if relation_name not in encoding.flattened_relations:
-                encoding.flattened_relations[relation_name] = object_indices
-            else:
-                encoding.flattened_relations[relation_name].extend(object_indices)
+            _extend_relation(encoding.flattened_relations, relation_name, object_indices)
 
 
 
@@ -141,10 +143,7 @@ class GroundActionsEncoder(Encoder):
             relation_name = get_action_name(action, self.suffix)
             action_id = context.new_action_id()
             term_ids = [action_id] + [context.get_object_id(obj.get_index()) for obj in action.get_objects()]
-            if relation_name not in encoding.flattened_relations:
-                encoding.flattened_relations[relation_name] = term_ids
-            else:
-                encoding.flattened_relations[relation_name].extend(term_ids)
+            _extend_relation(encoding.flattened_relations, relation_name, term_ids)
 
 
 class TransitionEffectsEncoder(Encoder):
@@ -212,10 +211,7 @@ class TransitionEffectsEncoder(Encoder):
                 effect_atom = effect_literal.get_atom()
                 effect_name = get_effect_name(effect_atom.get_predicate(), effect_literal.get_polarity(), False, self.suffix)
                 object_ids = [transition_id] + [context.get_object_id(obj.get_index()) for obj in effect_atom.get_terms()]
-                if effect_name not in encoding.flattened_relations:
-                    encoding.flattened_relations[effect_name] = object_ids
-                else:
-                    encoding.flattened_relations[effect_name].extend(object_ids)
+                _extend_relation(encoding.flattened_relations, effect_name, object_ids)
 
                 # Add how this transition affects the goal
                 if effect_atom in goal_dictionary:
@@ -225,10 +221,7 @@ class TransitionEffectsEncoder(Encoder):
                     assert effect_atom == goal_literal.get_atom()
                     goal_effect_name = get_effect_name(effect_atom.get_predicate(), effect_literal.get_polarity(), True, self.suffix)
                     goal_object_ids = [transition_id] + [context.get_object_id(obj.get_index()) for obj in effect_atom.get_terms()]
-                    if goal_effect_name not in encoding.flattened_relations:
-                        encoding.flattened_relations[goal_effect_name] = goal_object_ids
-                    else:
-                        encoding.flattened_relations[goal_effect_name].extend(goal_object_ids)
+                    _extend_relation(encoding.flattened_relations, goal_effect_name, goal_object_ids)
 
         # Add relations between transitions if provided
         for from_index, to_index in effects_relations:
@@ -239,10 +232,7 @@ class TransitionEffectsEncoder(Encoder):
             to_id = transition_index_to_id[to_index]
             effect_relation_name = get_effect_relation_name(self.suffix)
             relation_ids = [from_id, to_id]
-            if effect_relation_name not in encoding.flattened_relations:
-                encoding.flattened_relations[effect_relation_name] = relation_ids
-            else:
-                encoding.flattened_relations[effect_relation_name].extend(relation_ids)
+            _extend_relation(encoding.flattened_relations, effect_relation_name, relation_ids)
 
 
 class VirtualNodeEncoder(Encoder):
@@ -262,12 +252,10 @@ class VirtualNodeEncoder(Encoder):
 
     def encode(self, input_value: Any, state: mm.State, encoding: 'EncodedLists', context: 'EncodingContext') -> None:
         virtual_id = context.new_virtual_id()
+        relation_terms = encoding.flattened_relations.setdefault(self.link_name, [])
         for obj in state.get_problem().get_objects():
             object_id = context.get_object_id(obj.get_index())
-            if self.link_name not in encoding.flattened_relations:
-                encoding.flattened_relations[self.link_name] = [virtual_id, object_id]
-            else:
-                encoding.flattened_relations[self.link_name].extend([virtual_id, object_id])
+            relation_terms.extend([virtual_id, object_id])
 
 
 def get_relations_from_encoders(domain: mm.Domain, input_specification: tuple[Encoder, ...]) -> list[tuple[str, int]]:
@@ -441,12 +429,7 @@ class ExpressiveStateEncoder(ExpressiveEncoderBase):
         for atom in input_value.get_atoms():
             relation_name = self.get_relation_name_of_ground_atom(atom, state, False)
             term_indices = [obj.get_index() for obj in atom.get_terms()]
-            # Create the relation list if it does not already exist.
-            if relation_name not in encoding.flattened_relations:
-                flattened_relation: list[int] = []
-                encoding.flattened_relations[relation_name] = flattened_relation
-            else:
-                flattened_relation = encoding.flattened_relations[relation_name]
+            flattened_relation = encoding.flattened_relations.setdefault(relation_name, [])
             # Add all possible pair combinations of the terms as arguments.
             for o1 in term_indices:
                 for o2 in term_indices:
@@ -462,10 +445,7 @@ class ExpressiveStateEncoder(ExpressiveEncoderBase):
                     composition_relation.append(self.get_id(o1, o2, context))
                     composition_relation.append(self.get_id(o2, o3, context))
                     composition_relation.append(self.get_id(o1, o3, context))
-        if self.composition_name in encoding.flattened_relations:
-            encoding.flattened_relations[self.composition_name].extend(composition_relation)
-        else:
-            encoding.flattened_relations[self.composition_name] = composition_relation
+        _extend_relation(encoding.flattened_relations, self.composition_name, composition_relation)
 
 
 class ExpressiveGoalEncoder(ExpressiveEncoderBase):
@@ -511,12 +491,7 @@ class ExpressiveGoalEncoder(ExpressiveEncoderBase):
             atom = literal.get_atom()
             relation_name = self.get_relation_name_of_ground_atom(atom, state, True)
             term_indices: list[int] = [obj.get_index() for obj in atom.get_terms()]
-            # Create the relation list if it does not already exist.
-            if relation_name not in encoding.flattened_relations:
-                flattened_relation: list[int] = []
-                encoding.flattened_relations[relation_name] = flattened_relation
-            else:
-                flattened_relation = encoding.flattened_relations[relation_name]
+            flattened_relation = encoding.flattened_relations.setdefault(relation_name, [])
             # Add all possible pair combinations of the terms as arguments.
             for o1 in term_indices:
                 for o2 in term_indices:

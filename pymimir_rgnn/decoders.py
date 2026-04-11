@@ -39,7 +39,7 @@ class ActionScalarDecoder(Decoder):
         action_embeddings = node_embeddings.index_select(0, encoding.action_indices)
         object_embeddings = node_embeddings.index_select(0, encoding.object_indices)
         object_aggregation = self._object_readout.forward(object_embeddings, encoding.object_sizes, encoding.object_group_ends)
-        object_aggregation = object_aggregation.repeat_interleave(encoding.action_sizes, dim=0)
+        object_aggregation = object_aggregation.repeat_interleave(encoding.action_sizes, dim=0, output_size=encoding.action_indices.numel())
         values = self._action_value.forward(torch.cat((action_embeddings, object_aggregation), dim=1))
         return [action_values.view(-1) for action_values in values.split(encoding.action_sizes_list)]  # type: ignore
 

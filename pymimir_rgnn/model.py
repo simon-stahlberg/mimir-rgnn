@@ -31,6 +31,7 @@ class ForwardState:
         """
         self._layer_index = layer_index
         self._readouts = readouts
+        self._cached_readouts: dict[str, Any] = {}
 
     def get_layer_index(self) -> int:
         """Get the current layer index.
@@ -49,7 +50,9 @@ class ForwardState:
         Returns:
             The output from the specified readout function.
         """
-        return self._readouts[name]()
+        if name not in self._cached_readouts:
+            self._cached_readouts[name] = self._readouts[name]()
+        return self._cached_readouts[name]
 
 class RelationalLayerModule(nn.Module):
     """Message passing module for relational graph neural networks.
@@ -153,7 +156,8 @@ class RelationalLayerStackModule(nn.Module):
                 next_node_embeddings = self._update_normalization(next_node_embeddings)
             if self._config.global_readout:
                 global_embedding: torch.Tensor = self._global_readout(node_embeddings, input.node_sizes, input.node_group_ends)
-                global_messages: torch.Tensor = self._global_update(torch.cat((node_embeddings, global_embedding.repeat_interleave(input.node_sizes, dim=0)), 1))
+                global_context = global_embedding.repeat_interleave(input.node_sizes, dim=0, output_size=input.node_count)
+                global_messages: torch.Tensor = self._global_update(torch.cat((node_embeddings, global_context), 1))
                 if self._config.normalize_updates:
                     global_messages = self._update_normalization(global_messages)
                 next_node_embeddings = global_messages + next_node_embeddings
