@@ -59,6 +59,15 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument('--residual-updates', action='store_true', default=True, help='Enable residual updates.')
     parser.add_argument('--no-residual-updates', dest='residual_updates', action='store_false', help='Disable residual updates.')
     parser.add_argument('--binarize-updates', action='store_true', help='Enable binarized updates.')
+    parser.add_argument('--torch-compile', action='store_true', help='Compile only the tensor-heavy MPNN stack before benchmarking.')
+    parser.add_argument(
+        '--compile-mode',
+        choices=('default', 'reduce-overhead', 'max-autotune'),
+        default=None,
+        help='Override the torch.compile mode. Defaults to default for training and reduce-overhead for inference.',
+    )
+    parser.add_argument('--compile-dynamic', action='store_true', help='Enable dynamic-shape support for torch.compile.')
+    parser.add_argument('--tf32', action='store_true', default=False, help='Enable TF32 for float32 CUDA matmuls and cuDNN kernels.')
     parser.add_argument('--cuda-events', dest='use_cuda_events', action='store_true', default=None, help='Use CUDA event timing for compute and readout sections when running on CUDA.')
     parser.add_argument('--no-cuda-events', dest='use_cuda_events', action='store_false', help='Disable CUDA event timing and use synchronized wall-clock timing for all sections.')
     return parser.parse_args()
@@ -128,6 +137,14 @@ def main() -> int:
         update_function=rgnn.MLPUpdates(hparam_config),
     )
     model = rgnn.RelationalGraphNeuralNetwork(hparam_config, module_config, input_spec, output_spec).to(device)
+    rgnn.set_tf32_enabled(args.tf32)
+    resolved_compile_mode: str | None = None
+    if args.torch_compile:
+        resolved_compile_mode = model.enable_torch_compile(
+            args.mode,
+            compile_mode=args.compile_mode,
+            dynamic=args.compile_dynamic,
+        )
     input_data = [(state, actions, goal)] * args.batch_size
     latency = rgnn.measure_forward_readout_latency(
         model,
@@ -140,7 +157,14 @@ def main() -> int:
         use_cuda_events=args.use_cuda_events,
     )
 
-    print(json.dumps(latency.to_dict(), indent=2, sort_keys=True))
+    report = latency.to_dict()
+    report['optimizations'] = {
+        'torch_compile': args.torch_compile,
+        'torch_compile_mode': resolved_compile_mode,
+        'torch_compile_dynamic': args.compile_dynamic,
+        'tf32': rgnn.is_tf32_enabled(),
+    }
+    print(json.dumps(report, indent=2, sort_keys=True))
     return 0
 
 

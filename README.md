@@ -88,6 +88,17 @@ latency = rgnn.measure_forward_readout_latency(
 print(latency.to_dict())
 ```
 
+For opt-in CUDA runtime tuning, the library also exposes helpers for TF32 and
+`torch.compile`. Compilation is intentionally scoped to the tensor-heavy MPNN
+core, not the Python and Mimir encoding path:
+
+```python
+rgnn.set_tf32_enabled(True)
+model = model.to(device)
+model.enable_torch_compile('training')
+model.enable_torch_compile('inference')
+```
+
 There is also a small command-line benchmark wrapper in
 [scripts/benchmark_forward_latency.py](scripts/benchmark_forward_latency.py):
 
@@ -100,6 +111,8 @@ python scripts/benchmark_forward_latency.py \
     --num-layers 6 \
     --global-readout \
     --normalize-updates \
+    --torch-compile \
+    --tf32 \
     --device cuda
 ```
 

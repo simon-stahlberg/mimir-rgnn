@@ -59,6 +59,7 @@ from .messages import PredicateMLPMessages, AttentionMessages, AttentionMessages
 from .latency import ForwardReadoutLatency, LatencyStats, measure_forward_readout_latency
 from .model import ForwardState, RelationalGraphNeuralNetwork
 from .modules import MLP, SumReadout
+from .runtime import RuntimeMode, TorchCompileMode, is_tf32_enabled, set_tf32_enabled
 from .updates import MLPUpdates
 
 __all__ = [
@@ -88,10 +89,14 @@ __all__ = [
     "ObjectsScalarDecoder",
     "PredicateMLPMessages",
     "RelationalGraphNeuralNetwork",
+    "RuntimeMode",
+    "set_tf32_enabled",
     "SmoothMaximumAggregation",
     "StateEncoder",
     "SumAggregation",
     "SumReadout",
+    "TorchCompileMode",
     "TransitionEffectsEncoder",
     "UpdateFunction",
+    "is_tf32_enabled",
 ]

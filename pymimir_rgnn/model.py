@@ -11,6 +11,7 @@ from .configs import HyperparameterConfig, ModuleConfig
 from .decoders import Decoder
 from .encoders import EncodedTensors, get_input_from_encoders
 from .modules import MLP, SumReadout
+from .runtime import RuntimeMode, TorchCompileMode
 from .utils import gumbel_sigmoid
 
 
@@ -224,6 +225,8 @@ class RelationalGraphNeuralNetwork(nn.Module):
             self._readouts.add_module(output_name, decoder)
         self._dummy = nn.Parameter(torch.empty(0))
         self._hooks: list[Callable[[ForwardState], None]] = []
+        self._compiled_mpnn: dict[RuntimeMode, Callable[[EncodedTensors], torch.Tensor]] = {}
+        self._compiled_mpnn_settings: dict[RuntimeMode, tuple[TorchCompileMode, bool]] = {}
 
     def _notify_hooks(self, forward_state: ForwardState) -> None:
         """Notify all registered hooks of the current forward state.
@@ -270,6 +273,74 @@ class RelationalGraphNeuralNetwork(nn.Module):
         """
         return self._dummy.device
 
+    @staticmethod
+    def _resolve_torch_compile_mode(mode: RuntimeMode, compile_mode: TorchCompileMode | None) -> TorchCompileMode:
+        if compile_mode is not None:
+            return compile_mode
+        return 'default' if mode == 'training' else 'reduce-overhead'
+
+    def enable_torch_compile(
+        self,
+        mode: RuntimeMode,
+        *,
+        compile_mode: TorchCompileMode | None = None,
+        dynamic: bool = False,
+    ) -> TorchCompileMode:
+        """Enable torch.compile for the tensor-only MPNN execution path.
+
+        This compiles only the encoded-tensor message-passing stack and keeps the
+        Python and Mimir input encoding path eager. Call this after moving the
+        model to its target device.
+
+        Args:
+            mode: Whether to compile the training or inference execution path.
+            compile_mode: Optional torch.compile mode. Defaults to ``'default'``
+                for training and ``'reduce-overhead'`` for inference.
+            dynamic: Whether torch.compile should enable dynamic shape handling.
+
+        Returns:
+            The resolved torch.compile mode.
+        """
+        resolved_compile_mode = self._resolve_torch_compile_mode(mode, compile_mode)
+        current_settings = self._compiled_mpnn_settings.get(mode)
+        if current_settings == (resolved_compile_mode, dynamic):
+            return resolved_compile_mode
+
+        def compiled_mpnn(input: EncodedTensors) -> torch.Tensor:
+            return self._mpnn_module.forward(input)
+
+        self._compiled_mpnn[mode] = torch.compile(compiled_mpnn, mode=resolved_compile_mode, dynamic=dynamic)
+        self._compiled_mpnn_settings[mode] = (resolved_compile_mode, dynamic)
+        return resolved_compile_mode
+
+    def disable_torch_compile(self, mode: RuntimeMode | None = None) -> None:
+        """Disable torch.compile for one or both runtime modes.
+
+        Args:
+            mode: Specific runtime mode to disable. If omitted, disables all
+                compiled runtime paths.
+        """
+        if mode is None:
+            self._compiled_mpnn.clear()
+            self._compiled_mpnn_settings.clear()
+            return
+        self._compiled_mpnn.pop(mode, None)
+        self._compiled_mpnn_settings.pop(mode, None)
+
+    def get_torch_compile_mode(self, mode: RuntimeMode) -> TorchCompileMode | None:
+        """Return the configured torch.compile mode for a runtime path."""
+        settings = self._compiled_mpnn_settings.get(mode)
+        return None if settings is None else settings[0]
+
+    def _run_mpnn(self, input: EncodedTensors) -> torch.Tensor:
+        if len(self._hooks) > 0:
+            return self._mpnn_module.forward(input)
+        mode: RuntimeMode = 'training' if self.training else 'inference'
+        compiled_mpnn = self._compiled_mpnn.get(mode)
+        if compiled_mpnn is not None:
+            return compiled_mpnn(input)
+        return self._mpnn_module.forward(input)
+
     def _internal_forward(self, input: 'EncodedTensors') -> ForwardState:
         """Run the neural network computation phase of the forward pass.
 
@@ -292,7 +363,7 @@ class RelationalGraphNeuralNetwork(nn.Module):
                 forward_state = ForwardState(layer_index, curried_readouts)
                 self._notify_hooks(forward_state)
             self._mpnn_module.add_hook(hook_function)
-        node_embeddings = self._mpnn_module.forward(input)
+        node_embeddings = self._run_mpnn(input)
         if len(self._hooks) > 0:
             self._mpnn_module.clear_hooks()
         def make_readout_func(readout: Any) -> Callable[[], Any]:
