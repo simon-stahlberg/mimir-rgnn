@@ -43,7 +43,7 @@ class PredicateMLPMessages(MessageFunction):
         Args:
             relations: Dictionary mapping relation names to their argument indices.
         """
-        active_relations: list[tuple[torch.Tensor, MLP, int, int]] = []
+        active_relations: list[tuple[MLP, int, int]] = []
         output_indices_list: list[torch.Tensor] = []
         message_count = 0
         for relation_name, argument_indices in relations.items():
@@ -51,7 +51,7 @@ class PredicateMLPMessages(MessageFunction):
                 continue
             relation_module: MLP = self._relation_mlps[relation_name]  # type: ignore
             next_message_count = message_count + argument_indices.numel()
-            active_relations.append((argument_indices, relation_module, message_count, next_message_count))
+            active_relations.append((relation_module, message_count, next_message_count))
             output_indices_list.append(argument_indices)
             message_count = next_message_count
 
@@ -109,13 +109,14 @@ class PredicateMLPMessages(MessageFunction):
             output_indices: torch.Tensor = self._cache['output_indices']  # type: ignore
             return output_messages, output_indices
 
+        output_indices: torch.Tensor = self._cache['output_indices']  # type: ignore
+        gathered_embeddings = torch.index_select(node_embeddings, 0, output_indices)
         output_messages = node_embeddings.new_empty((message_count, self._embedding_size))
-        for argument_indices, relation_module, start_index, end_index in self._cache['active_relations']:
-            argument_embeddings = torch.index_select(node_embeddings, 0, argument_indices)
+        for relation_module, start_index, end_index in self._cache['active_relations']:
+            argument_embeddings = gathered_embeddings[start_index:end_index]
             argument_messages = relation_module(argument_embeddings.view(-1, relation_module.input_size))
             relation_output = (argument_embeddings.view_as(argument_messages) + argument_messages).view(-1, self._embedding_size)
             output_messages[start_index:end_index] = relation_output
-        output_indices: torch.Tensor = self._cache['output_indices']  # type: ignore
         return output_messages, output_indices
 
 
