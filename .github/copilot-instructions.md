@@ -6,13 +6,13 @@
 
 ## Working Effectively
 
-### Bootstrap, Build, and Test the Repository
+### Build, and Test the Repository
 
 **CRITICAL TIMING**: Set timeouts appropriately - NEVER CANCEL builds/tests prematurely.
 
-1. **Install development dependencies** - takes ~2 minutes, NEVER CANCEL:
+1. **Use virtual environment**:
    ```bash
-   pip install -e ".[dev]"  # Takes 1m55s - set timeout to 5+ minutes
+   source .uv-3-10/bin/activate
    ```
 
 2. **Run tests** - takes ~3 seconds:
@@ -24,75 +24,6 @@
    ```bash
    mypy pymimir_rgnn/
    ```
-
-### Alternative CI-Style Setup (if main setup fails)
-
-If the regular setup fails due to network issues, use the CI approach:
-
-```bash
-pip install --upgrade pip
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu  # Takes ~28s
-pip install pymimir
-pip install pytest mypy
-pip install -e .[dev]
-```
-
-### Validation
-
-**ALWAYS run these validation scenarios after making changes:**
-
-1. **Test basic import**:
-   ```bash
-   python -c "import pymimir_rgnn as rgnn; print('✓ Import successful')"
-   ```
-
-2. **Test core functionality** - create and run this validation script:
-   ```python
-   import pymimir as mm
-   import pymimir_rgnn as rgnn
-   from pathlib import Path
-
-   # Test with blocks domain
-   test_dir = Path('tests/data')
-   domain = mm.Domain(test_dir / 'blocks' / 'domain.pddl')
-   problem = mm.Problem(domain, test_dir / 'blocks' / 'problem.pddl')
-
-   hparam_config = rgnn.HyperparameterConfig(
-       domain=domain,
-       embedding_size=32,
-       num_layers=3,
-   )
-
-   input_spec = (rgnn.StateEncoder(), rgnn.GroundActionsEncoder(), rgnn.GoalEncoder())
-   output_spec = [('q_values', rgnn.ActionScalarDecoder(hparam_config))]
-
-   module_config = rgnn.ModuleConfig(
-       aggregation_function=rgnn.MeanAggregation(),
-       message_function=rgnn.PredicateMLPMessages(hparam_config, input_spec),
-       update_function=rgnn.MLPUpdates(hparam_config)
-   )
-
-   model = rgnn.RelationalGraphNeuralNetwork(hparam_config, module_config, input_spec, output_spec)
-   initial_state = problem.get_initial_state()
-   initial_actions = initial_state.generate_applicable_actions()
-   goal = problem.get_goal_condition()
-
-   output = model.forward([(initial_state, initial_actions, goal)])
-   q_values = output.readout('q_values')
-   print(f"✓ Got Q-values for {len(q_values[0])} actions")
-   ```
-
-### Build Limitations
-
-**DO NOT attempt `python -m build`** - this fails due to network timeouts in CI environments. The package builds work in production but not in sandboxed environments.
-
-### Pre-commit Validation
-
-Always run before finishing changes:
-```bash
-python -m pytest tests/ -v     # Takes 3 seconds
-mypy pymimir_rgnn/            # Takes 16 seconds
-```
 
 ### Key Design Principles
 1. **Type Safety First**: All public interfaces must be fully typed
@@ -272,17 +203,17 @@ def test_model_configuration(domain: str, aggregation: AggregationFunction,
 
 ### Import Organization
 ```python
-# 1. Standard library
+# 1. imports
 import os
-from pathlib import Path
-from typing import Any, Callable, Union
-
-# 2. Third-party (PyTorch, Mimir)
 import torch
 import torch.nn as nn
 import pymimir as mm
 
-# 3. Local imports
+# 2. Third-party from imports
+from pathlib import Path
+from typing import Any, Callable, Union
+
+# 3. Local from imports
 from .encoders import StateEncoder
 from .decoders import ActionScalarDecoder
 from .modules import MLP, SumReadout
