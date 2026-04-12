@@ -88,15 +88,25 @@ latency = rgnn.measure_forward_readout_latency(
 print(latency.to_dict())
 ```
 
-For opt-in CUDA runtime tuning, the library also exposes helpers for TF32 and
-`torch.compile`. Compilation is intentionally scoped to the tensor-heavy MPNN
-core, not the Python and Mimir encoding path:
+For opt-in CUDA runtime tuning, the library also exposes helpers for TF32,
+BF16 autocast, and `torch.compile`. Compilation is intentionally scoped to the
+tensor-heavy MPNN core, not the Python and Mimir encoding path:
 
 ```python
+rgnn.set_bf16_enabled(True)
 rgnn.set_tf32_enabled(True)
 model = model.to(device)
 model.enable_torch_compile('training')
 model.enable_torch_compile('inference')
+```
+
+If you want the same BF16 setting to cover custom loss computations outside the
+model, you can reuse the public autocast helper:
+
+```python
+with rgnn.autocast_context(model.get_device()):
+    outputs = model.forward(inputs)
+    loss = outputs.readout('q_values')[0].square().mean()
 ```
 
 There is also a small command-line benchmark wrapper in
@@ -112,6 +122,7 @@ python scripts/benchmark_forward_latency.py \
     --global-readout \
     --normalize-updates \
     --torch-compile \
+    --bf16 \
     --tf32 \
     --device cuda
 ```

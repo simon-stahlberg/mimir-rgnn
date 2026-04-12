@@ -67,6 +67,7 @@ def _parse_args() -> argparse.Namespace:
         help='Override the torch.compile mode. Defaults to default for training and reduce-overhead for inference.',
     )
     parser.add_argument('--compile-dynamic', action='store_true', help='Enable dynamic-shape support for torch.compile.')
+    parser.add_argument('--bf16', action='store_true', default=False, help='Enable BF16 autocast for CUDA execution.')
     parser.add_argument('--tf32', action='store_true', default=False, help='Enable TF32 for float32 CUDA matmuls and cuDNN kernels.')
     parser.add_argument('--cuda-events', dest='use_cuda_events', action='store_true', default=None, help='Use CUDA event timing for compute and readout sections when running on CUDA.')
     parser.add_argument('--no-cuda-events', dest='use_cuda_events', action='store_false', help='Disable CUDA event timing and use synchronized wall-clock timing for all sections.')
@@ -137,6 +138,7 @@ def main() -> int:
         update_function=rgnn.MLPUpdates(hparam_config),
     )
     model = rgnn.RelationalGraphNeuralNetwork(hparam_config, module_config, input_spec, output_spec).to(device)
+    rgnn.set_bf16_enabled(args.bf16)
     rgnn.set_tf32_enabled(args.tf32)
     resolved_compile_mode: str | None = None
     if args.torch_compile:
@@ -159,6 +161,7 @@ def main() -> int:
 
     report = latency.to_dict()
     report['optimizations'] = {
+        'bf16': rgnn.is_bf16_enabled(),
         'torch_compile': args.torch_compile,
         'torch_compile_mode': resolved_compile_mode,
         'torch_compile_dynamic': args.compile_dynamic,

@@ -11,7 +11,7 @@ from .configs import HyperparameterConfig, ModuleConfig
 from .decoders import Decoder
 from .encoders import EncodedTensors, get_input_from_encoders
 from .modules import MLP, SumReadout
-from .runtime import RuntimeMode, TorchCompileMode
+from .runtime import RuntimeMode, TorchCompileMode, autocast_context, is_bf16_enabled
 from .utils import gumbel_sigmoid
 
 
@@ -226,7 +226,7 @@ class RelationalGraphNeuralNetwork(nn.Module):
         self._dummy = nn.Parameter(torch.empty(0))
         self._hooks: list[Callable[[ForwardState], None]] = []
         self._compiled_mpnn: dict[RuntimeMode, Callable[[EncodedTensors], torch.Tensor]] = {}
-        self._compiled_mpnn_settings: dict[RuntimeMode, tuple[TorchCompileMode, bool]] = {}
+        self._compiled_mpnn_settings: dict[RuntimeMode, tuple[TorchCompileMode, bool, bool]] = {}
 
     def _notify_hooks(self, forward_state: ForwardState) -> None:
         """Notify all registered hooks of the current forward state.
@@ -302,15 +302,16 @@ class RelationalGraphNeuralNetwork(nn.Module):
             The resolved torch.compile mode.
         """
         resolved_compile_mode = self._resolve_torch_compile_mode(mode, compile_mode)
+        bf16_enabled = is_bf16_enabled()
         current_settings = self._compiled_mpnn_settings.get(mode)
-        if current_settings == (resolved_compile_mode, dynamic):
+        if current_settings == (resolved_compile_mode, dynamic, bf16_enabled):
             return resolved_compile_mode
 
         def compiled_mpnn(input: EncodedTensors) -> torch.Tensor:
             return self._mpnn_module.forward(input)
 
         self._compiled_mpnn[mode] = torch.compile(compiled_mpnn, mode=resolved_compile_mode, dynamic=dynamic)
-        self._compiled_mpnn_settings[mode] = (resolved_compile_mode, dynamic)
+        self._compiled_mpnn_settings[mode] = (resolved_compile_mode, dynamic, bf16_enabled)
         return resolved_compile_mode
 
     def disable_torch_compile(self, mode: RuntimeMode | None = None) -> None:
@@ -332,14 +333,19 @@ class RelationalGraphNeuralNetwork(nn.Module):
         settings = self._compiled_mpnn_settings.get(mode)
         return None if settings is None else settings[0]
 
+    def _run_readout(self, readout: Any, node_embeddings: torch.Tensor, input: EncodedTensors) -> Any:
+        with autocast_context(self.get_device()):
+            return readout(node_embeddings, input)
+
     def _run_mpnn(self, input: EncodedTensors) -> torch.Tensor:
-        if len(self._hooks) > 0:
+        with autocast_context(self.get_device()):
+            if len(self._hooks) > 0:
+                return self._mpnn_module.forward(input)
+            mode: RuntimeMode = 'training' if self.training else 'inference'
+            compiled_mpnn = self._compiled_mpnn.get(mode)
+            if compiled_mpnn is not None:
+                return compiled_mpnn(input)
             return self._mpnn_module.forward(input)
-        mode: RuntimeMode = 'training' if self.training else 'inference'
-        compiled_mpnn = self._compiled_mpnn.get(mode)
-        if compiled_mpnn is not None:
-            return compiled_mpnn(input)
-        return self._mpnn_module.forward(input)
 
     def _internal_forward(self, input: 'EncodedTensors') -> ForwardState:
         """Run the neural network computation phase of the forward pass.
@@ -358,7 +364,7 @@ class RelationalGraphNeuralNetwork(nn.Module):
             def hook_function(layer_index: 'int', node_embeddings: 'torch.Tensor') -> 'None':
                 nonlocal self, input
                 def make_readout_func(readout: Any) -> Callable[[], Any]:
-                    return lambda: readout(node_embeddings, input)
+                    return lambda: self._run_readout(readout, node_embeddings, input)
                 curried_readouts = { name: make_readout_func(readout) for name, readout in self._readouts.items() }
                 forward_state = ForwardState(layer_index, curried_readouts)
                 self._notify_hooks(forward_state)
@@ -367,7 +373,7 @@ class RelationalGraphNeuralNetwork(nn.Module):
         if len(self._hooks) > 0:
             self._mpnn_module.clear_hooks()
         def make_readout_func(readout: Any) -> Callable[[], Any]:
-            return lambda: readout(node_embeddings, input)
+            return lambda: self._run_readout(readout, node_embeddings, input)
         curried_readouts = { name: make_readout_func(readout) for name, readout in self._readouts.items() }
         return ForwardState(self._hparam_config.num_layers - 1, curried_readouts)
 

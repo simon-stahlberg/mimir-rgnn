@@ -3,7 +3,7 @@ import pytest
 import torch
 
 from pathlib import Path
-from pymimir_rgnn import ActionScalarDecoder, GoalEncoder, GroundActionsEncoder, HyperparameterConfig, MeanAggregation, MLPUpdates, ModuleConfig, PredicateMLPMessages, RelationalGraphNeuralNetwork, StateEncoder, is_tf32_enabled, set_tf32_enabled
+from pymimir_rgnn import ActionScalarDecoder, GoalEncoder, GroundActionsEncoder, HyperparameterConfig, MeanAggregation, MLPUpdates, ModuleConfig, PredicateMLPMessages, RelationalGraphNeuralNetwork, StateEncoder, autocast_context, is_bf16_enabled, is_tf32_enabled, set_bf16_enabled, set_tf32_enabled
 
 
 TEST_DIR = Path(__file__).parent
@@ -100,3 +100,44 @@ def test_tf32_helpers_toggle_state() -> None:
         torch.set_float32_matmul_precision(original_precision)
         torch.backends.cuda.matmul.allow_tf32 = original_matmul_tf32
         torch.backends.cudnn.allow_tf32 = original_cudnn_tf32
+
+
+def test_bf16_helpers_toggle_state() -> None:
+    try:
+        set_bf16_enabled(True)
+        assert is_bf16_enabled()
+
+        set_bf16_enabled(False)
+        assert not is_bf16_enabled()
+    finally:
+        set_bf16_enabled(False)
+
+
+def test_autocast_context_uses_torch_autocast_when_bf16_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    autocast_calls: list[tuple[str, torch.dtype]] = []
+
+    class DummyContext:
+        def __enter__(self) -> None:
+            return None
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> bool:
+            return False
+
+    def fake_autocast(*, device_type: str, dtype: torch.dtype) -> DummyContext:
+        autocast_calls.append((device_type, dtype))
+        return DummyContext()
+
+    monkeypatch.setattr(torch, 'autocast', fake_autocast)
+
+    try:
+        set_bf16_enabled(False)
+        with autocast_context(torch.device('cuda')):
+            pass
+        assert autocast_calls == []
+
+        set_bf16_enabled(True)
+        with autocast_context(torch.device('cuda')):
+            pass
+        assert autocast_calls == [('cuda', torch.bfloat16)]
+    finally:
+        set_bf16_enabled(False)
