@@ -11,7 +11,6 @@ from .configs import HyperparameterConfig, ModuleConfig
 from .decoders import Decoder
 from .encoders import EncodedTensors, get_input_from_encoders
 from .modules import MLP, SumReadout
-from .runtime import RuntimeMode, TorchCompileMode, autocast_context, is_bf16_enabled
 from .utils import gumbel_sigmoid
 
 
@@ -32,7 +31,6 @@ class ForwardState:
         """
         self._layer_index = layer_index
         self._readouts = readouts
-        self._cached_readouts: dict[str, Any] = {}
 
     def get_layer_index(self) -> int:
         """Get the current layer index.
@@ -51,9 +49,7 @@ class ForwardState:
         Returns:
             The output from the specified readout function.
         """
-        if name not in self._cached_readouts:
-            self._cached_readouts[name] = self._readouts[name]()
-        return self._cached_readouts[name]
+        return self._readouts[name]()
 
 class RelationalLayerModule(nn.Module):
     """Message passing module for relational graph neural networks.
@@ -150,15 +146,14 @@ class RelationalLayerStackModule(nn.Module):
         """
         self._message.setup(input.flattened_relations)
         device = input.node_sizes.device
-        node_embeddings: torch.Tensor = torch.zeros((input.node_count, self._config.embedding_size), dtype=torch.float, device=device)
+        node_embeddings: torch.Tensor = torch.zeros([int(input.node_sizes.sum()), self._config.embedding_size], dtype=torch.float, requires_grad=True, device=device)
         for iteration in range(self._config.num_layers):
             next_node_embeddings: torch.Tensor = self._relation_network(node_embeddings, input.flattened_relations)
             if self._config.normalize_updates:
                 next_node_embeddings = self._update_normalization(next_node_embeddings)
             if self._config.global_readout:
-                global_embedding: torch.Tensor = self._global_readout(node_embeddings, input.node_sizes, input.node_group_ends)
-                global_context = global_embedding.repeat_interleave(input.node_sizes, dim=0, output_size=input.node_count)
-                global_messages: torch.Tensor = self._global_update(torch.cat((node_embeddings, global_context), 1))
+                global_embedding: torch.Tensor = self._global_readout(node_embeddings, input.node_sizes)
+                global_messages: torch.Tensor = self._global_update(torch.cat((node_embeddings, global_embedding.repeat_interleave(input.node_sizes, dim=0)), 1))
                 if self._config.normalize_updates:
                     global_messages = self._update_normalization(global_messages)
                 next_node_embeddings = global_messages + next_node_embeddings
@@ -225,8 +220,6 @@ class RelationalGraphNeuralNetwork(nn.Module):
             self._readouts.add_module(output_name, decoder)
         self._dummy = nn.Parameter(torch.empty(0))
         self._hooks: list[Callable[[ForwardState], None]] = []
-        self._compiled_mpnn: dict[RuntimeMode, Callable[[EncodedTensors], torch.Tensor]] = {}
-        self._compiled_mpnn_settings: dict[RuntimeMode, tuple[TorchCompileMode, bool, bool]] = {}
 
     def _notify_hooks(self, forward_state: ForwardState) -> None:
         """Notify all registered hooks of the current forward state.
@@ -273,80 +266,6 @@ class RelationalGraphNeuralNetwork(nn.Module):
         """
         return self._dummy.device
 
-    @staticmethod
-    def _resolve_torch_compile_mode(mode: RuntimeMode, compile_mode: TorchCompileMode | None) -> TorchCompileMode:
-        if compile_mode is not None:
-            return compile_mode
-        return 'default' if mode == 'training' else 'reduce-overhead'
-
-    def enable_torch_compile(
-        self,
-        mode: RuntimeMode,
-        *,
-        compile_mode: TorchCompileMode | None = None,
-        dynamic: bool = False,
-    ) -> TorchCompileMode:
-        """Enable torch.compile for the tensor-only MPNN execution path.
-
-        This compiles only the encoded-tensor message-passing stack and keeps the
-        Python and Mimir input encoding path eager. Call this after moving the
-        model to its target device.
-
-        Args:
-            mode: Whether to compile the training or inference execution path.
-            compile_mode: Optional torch.compile mode. Defaults to ``'default'``
-                for training and ``'reduce-overhead'`` for inference.
-            dynamic: Whether torch.compile should enable dynamic shape handling.
-
-        Returns:
-            The resolved torch.compile mode.
-        """
-        resolved_compile_mode = self._resolve_torch_compile_mode(mode, compile_mode)
-        bf16_enabled = is_bf16_enabled()
-        current_settings = self._compiled_mpnn_settings.get(mode)
-        if current_settings == (resolved_compile_mode, dynamic, bf16_enabled):
-            return resolved_compile_mode
-
-        def compiled_mpnn(input: EncodedTensors) -> torch.Tensor:
-            return self._mpnn_module.forward(input)
-
-        self._compiled_mpnn[mode] = torch.compile(compiled_mpnn, mode=resolved_compile_mode, dynamic=dynamic)
-        self._compiled_mpnn_settings[mode] = (resolved_compile_mode, dynamic, bf16_enabled)
-        return resolved_compile_mode
-
-    def disable_torch_compile(self, mode: RuntimeMode | None = None) -> None:
-        """Disable torch.compile for one or both runtime modes.
-
-        Args:
-            mode: Specific runtime mode to disable. If omitted, disables all
-                compiled runtime paths.
-        """
-        if mode is None:
-            self._compiled_mpnn.clear()
-            self._compiled_mpnn_settings.clear()
-            return
-        self._compiled_mpnn.pop(mode, None)
-        self._compiled_mpnn_settings.pop(mode, None)
-
-    def get_torch_compile_mode(self, mode: RuntimeMode) -> TorchCompileMode | None:
-        """Return the configured torch.compile mode for a runtime path."""
-        settings = self._compiled_mpnn_settings.get(mode)
-        return None if settings is None else settings[0]
-
-    def _run_readout(self, readout: Any, node_embeddings: torch.Tensor, input: EncodedTensors) -> Any:
-        with autocast_context(self.get_device()):
-            return readout(node_embeddings, input)
-
-    def _run_mpnn(self, input: EncodedTensors) -> torch.Tensor:
-        with autocast_context(self.get_device()):
-            if len(self._hooks) > 0:
-                return self._mpnn_module.forward(input)
-            mode: RuntimeMode = 'training' if self.training else 'inference'
-            compiled_mpnn = self._compiled_mpnn.get(mode)
-            if compiled_mpnn is not None:
-                return compiled_mpnn(input)
-            return self._mpnn_module.forward(input)
-
     def _internal_forward(self, input: 'EncodedTensors') -> ForwardState:
         """Run the neural network computation phase of the forward pass.
 
@@ -364,16 +283,16 @@ class RelationalGraphNeuralNetwork(nn.Module):
             def hook_function(layer_index: 'int', node_embeddings: 'torch.Tensor') -> 'None':
                 nonlocal self, input
                 def make_readout_func(readout: Any) -> Callable[[], Any]:
-                    return lambda: self._run_readout(readout, node_embeddings, input)
+                    return lambda: readout(node_embeddings, input)
                 curried_readouts = { name: make_readout_func(readout) for name, readout in self._readouts.items() }
                 forward_state = ForwardState(layer_index, curried_readouts)
                 self._notify_hooks(forward_state)
             self._mpnn_module.add_hook(hook_function)
-        node_embeddings = self._run_mpnn(input)
+        node_embeddings = self._mpnn_module.forward(input)
         if len(self._hooks) > 0:
             self._mpnn_module.clear_hooks()
         def make_readout_func(readout: Any) -> Callable[[], Any]:
-            return lambda: self._run_readout(readout, node_embeddings, input)
+            return lambda: readout(node_embeddings, input)
         curried_readouts = { name: make_readout_func(readout) for name, readout in self._readouts.items() }
         return ForwardState(self._hparam_config.num_layers - 1, curried_readouts)
 

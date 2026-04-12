@@ -1,84 +1,10 @@
 import pymimir as mm
 import torch
 
-from dataclasses import dataclass
 from typing import Any
 
 from .bases import Encoder, EncodedLists, EncodedTensors, EncodingContext
 from .utils import get_action_name, get_atom_name, get_effect_name, get_effect_relation_name, get_predicate_name, relations_to_tensors
-
-
-def _extend_relation(flattened_relations: dict[str, list[int]], relation_name: str, relation_terms: list[int]) -> None:
-    existing_terms = flattened_relations.get(relation_name)
-    if existing_terms is None:
-        flattened_relations[relation_name] = relation_terms
-    else:
-        existing_terms.extend(relation_terms)
-
-
-@dataclass(frozen=True)
-class _EncodedInstance:
-    flattened_relations: dict[str, tuple[int, ...]]
-    object_indices: tuple[int, ...]
-    action_indices: tuple[int, ...]
-    virtual_indices: tuple[int, ...]
-    auxiliary_indices: tuple[int, ...]
-    object_count: int
-    action_count: int
-    virtual_count: int
-    auxiliary_count: int
-    node_count: int
-
-
-def _get_state_from_instance(instance: tuple) -> mm.State:
-    for value in instance:
-        if isinstance(value, mm.State):
-            return value
-    raise AssertionError('Input must contain a State.')
-
-
-def _encode_instance(instance: tuple, input_specification: tuple[Encoder, ...]) -> _EncodedInstance:
-    state = _get_state_from_instance(instance)
-    local_encoding = EncodedLists()
-    context = EncodingContext(state.get_problem(), 0)
-    for encoder_index, encoder in enumerate(input_specification):
-        input_value = instance[encoder_index]
-        encoder.encode(input_value, state, local_encoding, context)
-    return _EncodedInstance(
-        flattened_relations={name: tuple(relation_terms) for name, relation_terms in local_encoding.flattened_relations.items()},
-        object_indices=tuple(context.get_object_ids()),
-        action_indices=tuple(context.get_action_ids()),
-        virtual_indices=tuple(context.get_virtual_ids()),
-        auxiliary_indices=tuple(context.get_auxiliary_ids()),
-        object_count=context.get_object_count(),
-        action_count=context.get_action_count(),
-        virtual_count=context.get_virtual_count(),
-        auxiliary_count=context.get_auxiliary_count(),
-        node_count=context.get_node_count(),
-    )
-
-
-def _offset_ids(ids: tuple[int, ...], offset: int) -> list[int]:
-    if offset == 0:
-        return list(ids)
-    return [identifier + offset for identifier in ids]
-
-
-def _append_encoded_instance(encoding_lists: EncodedLists, encoded_instance: _EncodedInstance) -> None:
-    id_offset = encoding_lists.node_count
-    for relation_name, relation_terms in encoded_instance.flattened_relations.items():
-        _extend_relation(encoding_lists.flattened_relations, relation_name, _offset_ids(relation_terms, id_offset))
-
-    encoding_lists.object_indices.extend(_offset_ids(encoded_instance.object_indices, id_offset))
-    encoding_lists.action_indices.extend(_offset_ids(encoded_instance.action_indices, id_offset))
-    encoding_lists.virtual_indices.extend(_offset_ids(encoded_instance.virtual_indices, id_offset))
-    encoding_lists.auxiliary_indices.extend(_offset_ids(encoded_instance.auxiliary_indices, id_offset))
-    encoding_lists.object_sizes.append(encoded_instance.object_count)
-    encoding_lists.action_sizes.append(encoded_instance.action_count)
-    encoding_lists.virtual_sizes.append(encoded_instance.virtual_count)
-    encoding_lists.auxiliary_sizes.append(encoded_instance.auxiliary_count)
-    encoding_lists.node_sizes.append(encoded_instance.node_count)
-    encoding_lists.node_count += encoded_instance.node_count
 
 
 class StateEncoder(Encoder):
@@ -119,7 +45,10 @@ class StateEncoder(Encoder):
         for atom in input_value.get_atoms():
             relation_name = get_atom_name(atom, state, False, self.suffix)
             object_indices: list[int] = [context.get_object_id(obj.get_index()) for obj in atom.get_terms()]
-            _extend_relation(encoding.flattened_relations, relation_name, object_indices)
+            if relation_name not in encoding.flattened_relations:
+                encoding.flattened_relations[relation_name] = object_indices
+            else:
+                encoding.flattened_relations[relation_name].extend(object_indices)
 
 
 class GoalEncoder(Encoder):
@@ -167,7 +96,10 @@ class GoalEncoder(Encoder):
             atom = literal.get_atom()
             relation_name = get_atom_name(atom, state, True, self.suffix)
             object_indices: list[int] = [context.get_object_id(obj.get_index()) for obj in atom.get_terms()]
-            _extend_relation(encoding.flattened_relations, relation_name, object_indices)
+            if relation_name not in encoding.flattened_relations:
+                encoding.flattened_relations[relation_name] = object_indices
+            else:
+                encoding.flattened_relations[relation_name].extend(object_indices)
 
 
 
@@ -209,7 +141,10 @@ class GroundActionsEncoder(Encoder):
             relation_name = get_action_name(action, self.suffix)
             action_id = context.new_action_id()
             term_ids = [action_id] + [context.get_object_id(obj.get_index()) for obj in action.get_objects()]
-            _extend_relation(encoding.flattened_relations, relation_name, term_ids)
+            if relation_name not in encoding.flattened_relations:
+                encoding.flattened_relations[relation_name] = term_ids
+            else:
+                encoding.flattened_relations[relation_name].extend(term_ids)
 
 
 class TransitionEffectsEncoder(Encoder):
@@ -277,7 +212,10 @@ class TransitionEffectsEncoder(Encoder):
                 effect_atom = effect_literal.get_atom()
                 effect_name = get_effect_name(effect_atom.get_predicate(), effect_literal.get_polarity(), False, self.suffix)
                 object_ids = [transition_id] + [context.get_object_id(obj.get_index()) for obj in effect_atom.get_terms()]
-                _extend_relation(encoding.flattened_relations, effect_name, object_ids)
+                if effect_name not in encoding.flattened_relations:
+                    encoding.flattened_relations[effect_name] = object_ids
+                else:
+                    encoding.flattened_relations[effect_name].extend(object_ids)
 
                 # Add how this transition affects the goal
                 if effect_atom in goal_dictionary:
@@ -287,7 +225,10 @@ class TransitionEffectsEncoder(Encoder):
                     assert effect_atom == goal_literal.get_atom()
                     goal_effect_name = get_effect_name(effect_atom.get_predicate(), effect_literal.get_polarity(), True, self.suffix)
                     goal_object_ids = [transition_id] + [context.get_object_id(obj.get_index()) for obj in effect_atom.get_terms()]
-                    _extend_relation(encoding.flattened_relations, goal_effect_name, goal_object_ids)
+                    if goal_effect_name not in encoding.flattened_relations:
+                        encoding.flattened_relations[goal_effect_name] = goal_object_ids
+                    else:
+                        encoding.flattened_relations[goal_effect_name].extend(goal_object_ids)
 
         # Add relations between transitions if provided
         for from_index, to_index in effects_relations:
@@ -298,7 +239,10 @@ class TransitionEffectsEncoder(Encoder):
             to_id = transition_index_to_id[to_index]
             effect_relation_name = get_effect_relation_name(self.suffix)
             relation_ids = [from_id, to_id]
-            _extend_relation(encoding.flattened_relations, effect_relation_name, relation_ids)
+            if effect_relation_name not in encoding.flattened_relations:
+                encoding.flattened_relations[effect_relation_name] = relation_ids
+            else:
+                encoding.flattened_relations[effect_relation_name].extend(relation_ids)
 
 
 class VirtualNodeEncoder(Encoder):
@@ -318,10 +262,12 @@ class VirtualNodeEncoder(Encoder):
 
     def encode(self, input_value: Any, state: mm.State, encoding: 'EncodedLists', context: 'EncodingContext') -> None:
         virtual_id = context.new_virtual_id()
-        relation_terms = encoding.flattened_relations.setdefault(self.link_name, [])
         for obj in state.get_problem().get_objects():
             object_id = context.get_object_id(obj.get_index())
-            relation_terms.extend([virtual_id, object_id])
+            if self.link_name not in encoding.flattened_relations:
+                encoding.flattened_relations[self.link_name] = [virtual_id, object_id]
+            else:
+                encoding.flattened_relations[self.link_name].extend([virtual_id, object_id])
 
 
 def get_relations_from_encoders(domain: mm.Domain, input_specification: tuple[Encoder, ...]) -> list[tuple[str, int]]:
@@ -340,16 +286,6 @@ def get_relations_from_encoders(domain: mm.Domain, input_specification: tuple[En
     relations_list = list(relations_set)
     relations_list.sort()  # Ensure that the output is deterministic.
     return relations_list
-
-
-def _make_size_tensor(sizes: list[int], device: torch.device) -> torch.Tensor:
-    return torch.tensor(sizes, dtype=torch.int, device=device, requires_grad=False)
-
-
-def _make_group_ends(size_tensor: torch.Tensor) -> torch.Tensor:
-    if size_tensor.numel() == 0:
-        return torch.empty(0, dtype=size_tensor.dtype, device=size_tensor.device)
-    return size_tensor.cumsum(0) - 1
 
 
 def get_input_from_encoders(input: list[tuple], input_specification: tuple[Encoder, ...], device: torch.device) -> EncodedTensors:
@@ -374,44 +310,54 @@ def get_input_from_encoders(input: list[tuple], input_specification: tuple[Encod
                         no StateEncoder is found in the specification.
     """
     encoding_lists = EncodedLists()
-    instance_cache: dict[tuple[int, ...], _EncodedInstance] = {}
 
     # Process each input instance
     for instance in input:
         assert isinstance(instance, tuple), 'Input instance must be a tuple.'
         assert len(instance) == len(input_specification), 'Mismatch between the length of an input instance and the input specification.'
 
-        cache_key = tuple(id(value) for value in instance)
-        encoded_instance = instance_cache.get(cache_key)
-        if encoded_instance is None:
-            encoded_instance = _encode_instance(instance, input_specification)
-            instance_cache[cache_key] = encoded_instance
+        # Find the state of the input
+        state = None
+        for x in instance:
+            if isinstance(x, mm.State):
+                state = x
+                break
 
-        _append_encoded_instance(encoding_lists, encoded_instance)
+        assert state is not None, 'Input must contain a State.'
+
+        # Track nodes added for this instance
+        context = EncodingContext(state.get_problem(), encoding_lists.node_count)
+
+        # Process each encoder with its corresponding input value
+        for encoder_index, encoder in enumerate(input_specification):
+            input_value = instance[encoder_index]
+            encoder.encode(input_value, state, encoding_lists, context)
+
+        # Update global encoding with instance results
+        encoding_lists.object_indices.extend(context.get_object_ids())
+        encoding_lists.action_indices.extend(context.get_action_ids())
+        encoding_lists.virtual_indices.extend(context.get_virtual_ids())
+        encoding_lists.auxiliary_indices.extend(context.get_auxiliary_ids())
+        encoding_lists.object_sizes.append(context.get_object_count())
+        encoding_lists.action_sizes.append(context.get_action_count())
+        encoding_lists.virtual_sizes.append(context.get_virtual_count())
+        encoding_lists.auxiliary_sizes.append(context.get_auxiliary_count())
+        encoding_lists.node_sizes.append(context.get_node_count())
+        encoding_lists.node_count += context.get_node_count()
 
     # Convert the lists to tensors on the correct device
     encoding_tensors = EncodedTensors()
     encoding_tensors.flattened_relations = relations_to_tensors(encoding_lists.flattened_relations, device)
     encoding_tensors.node_count = encoding_lists.node_count
-    encoding_tensors.node_sizes_list = tuple(encoding_lists.node_sizes)
-    encoding_tensors.node_sizes = _make_size_tensor(encoding_lists.node_sizes, device)
-    encoding_tensors.node_group_ends = _make_group_ends(encoding_tensors.node_sizes)
+    encoding_tensors.node_sizes = torch.tensor(encoding_lists.node_sizes, dtype=torch.int, device=device, requires_grad=False)
     encoding_tensors.object_indices = torch.tensor(encoding_lists.object_indices, dtype=torch.int, device=device, requires_grad=False)
-    encoding_tensors.object_sizes_list = tuple(encoding_lists.object_sizes)
-    encoding_tensors.object_sizes = _make_size_tensor(encoding_lists.object_sizes, device)
-    encoding_tensors.object_group_ends = _make_group_ends(encoding_tensors.object_sizes)
+    encoding_tensors.object_sizes = torch.tensor(encoding_lists.object_sizes, dtype=torch.int, device=device, requires_grad=False)
     encoding_tensors.action_indices = torch.tensor(encoding_lists.action_indices, dtype=torch.int, device=device, requires_grad=False)
-    encoding_tensors.action_sizes_list = tuple(encoding_lists.action_sizes)
-    encoding_tensors.action_sizes = _make_size_tensor(encoding_lists.action_sizes, device)
-    encoding_tensors.action_group_ends = _make_group_ends(encoding_tensors.action_sizes)
+    encoding_tensors.action_sizes = torch.tensor(encoding_lists.action_sizes, dtype=torch.int, device=device, requires_grad=False)
     encoding_tensors.virtual_indices = torch.tensor(encoding_lists.virtual_indices, dtype=torch.int, device=device, requires_grad=False)
-    encoding_tensors.virtual_sizes_list = tuple(encoding_lists.virtual_sizes)
-    encoding_tensors.virtual_sizes = _make_size_tensor(encoding_lists.virtual_sizes, device)
-    encoding_tensors.virtual_group_ends = _make_group_ends(encoding_tensors.virtual_sizes)
+    encoding_tensors.virtual_sizes = torch.tensor(encoding_lists.virtual_sizes, dtype=torch.int, device=device, requires_grad=False)
     encoding_tensors.auxiliary_indices = torch.tensor(encoding_lists.auxiliary_indices, dtype=torch.int, device=device, requires_grad=False)
-    encoding_tensors.auxiliary_sizes_list = tuple(encoding_lists.auxiliary_sizes)
-    encoding_tensors.auxiliary_sizes = _make_size_tensor(encoding_lists.auxiliary_sizes, device)
-    encoding_tensors.auxiliary_group_ends = _make_group_ends(encoding_tensors.auxiliary_sizes)
+    encoding_tensors.auxiliary_sizes = torch.tensor(encoding_lists.auxiliary_sizes, dtype=torch.int, device=device, requires_grad=False)
     return encoding_tensors
 
 
@@ -475,7 +421,12 @@ class ExpressiveStateEncoder(ExpressiveEncoderBase):
         for atom in input_value.get_atoms():
             relation_name = self.get_relation_name_of_ground_atom(atom, state, False)
             term_indices = [obj.get_index() for obj in atom.get_terms()]
-            flattened_relation = encoding.flattened_relations.setdefault(relation_name, [])
+            # Create the relation list if it does not already exist.
+            if relation_name not in encoding.flattened_relations:
+                flattened_relation: list[int] = []
+                encoding.flattened_relations[relation_name] = flattened_relation
+            else:
+                flattened_relation = encoding.flattened_relations[relation_name]
             # Add all possible pair combinations of the terms as arguments.
             for o1 in term_indices:
                 for o2 in term_indices:
@@ -491,7 +442,10 @@ class ExpressiveStateEncoder(ExpressiveEncoderBase):
                     composition_relation.append(self.get_id(o1, o2, context))
                     composition_relation.append(self.get_id(o2, o3, context))
                     composition_relation.append(self.get_id(o1, o3, context))
-        _extend_relation(encoding.flattened_relations, self.composition_name, composition_relation)
+        if self.composition_name in encoding.flattened_relations:
+            encoding.flattened_relations[self.composition_name].extend(composition_relation)
+        else:
+            encoding.flattened_relations[self.composition_name] = composition_relation
 
 
 class ExpressiveGoalEncoder(ExpressiveEncoderBase):
@@ -537,7 +491,12 @@ class ExpressiveGoalEncoder(ExpressiveEncoderBase):
             atom = literal.get_atom()
             relation_name = self.get_relation_name_of_ground_atom(atom, state, True)
             term_indices: list[int] = [obj.get_index() for obj in atom.get_terms()]
-            flattened_relation = encoding.flattened_relations.setdefault(relation_name, [])
+            # Create the relation list if it does not already exist.
+            if relation_name not in encoding.flattened_relations:
+                flattened_relation: list[int] = []
+                encoding.flattened_relations[relation_name] = flattened_relation
+            else:
+                flattened_relation = encoding.flattened_relations[relation_name]
             # Add all possible pair combinations of the terms as arguments.
             for o1 in term_indices:
                 for o2 in term_indices:

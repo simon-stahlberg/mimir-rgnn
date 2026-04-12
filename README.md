@@ -72,64 +72,6 @@ model = rgnn.RelationalGraphNeuralNetwork(hparam_config, module_config, input_sp
 # q_values = outputs.readout('q_values')
 ```
 
-## Benchmarking Latency
-
-The package exposes a utility for measuring the full `model.forward(...).readout(...)`
-path and a phase breakdown for encoding, message passing, and readout:
-
-```python
-latency = rgnn.measure_forward_readout_latency(
-        model,
-        [(state, actions, goal)],
-        'q_values',
-        iterations=100,
-        warmup_iterations=20,
-)
-print(latency.to_dict())
-```
-
-For opt-in CUDA runtime tuning, the library also exposes helpers for TF32,
-BF16 autocast, and `torch.compile`. Compilation is intentionally scoped to the
-tensor-heavy MPNN core, not the Python and Mimir encoding path:
-
-```python
-rgnn.set_bf16_enabled(True)
-rgnn.set_tf32_enabled(True)
-model = model.to(device)
-model.enable_torch_compile('training')
-model.enable_torch_compile('inference')
-```
-
-If you want the same BF16 setting to cover custom loss computations outside the
-model, you can reuse the public autocast helper:
-
-```python
-with rgnn.autocast_context(model.get_device()):
-    outputs = model.forward(inputs)
-    loss = outputs.readout('q_values')[0].square().mean()
-```
-
-There is also a small command-line benchmark wrapper in
-[scripts/benchmark_forward_latency.py](scripts/benchmark_forward_latency.py):
-
-```bash
-python scripts/benchmark_forward_latency.py \
-    --domain-path tests/data/gripper/domain.pddl \
-    --problem-path tests/data/gripper/problem.pddl \
-    --aggregation hardmax \
-    --embedding-size 32 \
-    --num-layers 6 \
-    --global-readout \
-    --normalize-updates \
-    --torch-compile \
-    --bf16 \
-    --tf32 \
-    --device cuda
-```
-
-On CUDA, the utility synchronizes before and after each timed section so the
-reported latencies reflect actual device execution time.
-
 ## API Overview
 
 ### Core Components
@@ -163,7 +105,7 @@ The main R-GNN model class that:
 Inherit from `Encoder` base class to define custom input processing:
 
 - **`StateEncoder`**: Current state of the planning problem
-- **`GoalEncoder`**: Goal specification
+- **`GoalEncoder`**: Goal specification  
 - **`GroundActionsEncoder`**: Available ground actions
 - **`TransitionEffectsEncoder`**: Action effects and transitions
 
@@ -175,7 +117,7 @@ Inherit from `Decoder` base class to define custom output readout:
 input_spec = (StateEncoder(), GroundActionsEncoder(), GoalEncoder())
 output_spec = [
     ('actor', ActionScalarDecoder(hparam_config)),
-    ('critic', ObjectsScalarDecoder(hparam_config)),
+    ('critic', ObjectsScalarDecoder(hparam_config)), 
     ('embeddings', ActionEmbeddingDecoder())
 ]
 ```

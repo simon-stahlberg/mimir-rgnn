@@ -29,47 +29,12 @@ class PredicateMLPMessages(MessageFunction):
         super().__init__()
         self._embedding_size = hparam_config.embedding_size
         self._relation_mlps = nn.ModuleDict()
-        self._cache: dict[str, Any] | None = None
         relations = get_relations_from_encoders(hparam_config.domain, input_spec)
         for relation_name, relation_arity in relations:
             input_size = relation_arity * hparam_config.embedding_size
             output_size = relation_arity * hparam_config.embedding_size
             if (input_size > 0) and (output_size > 0):
                 self._relation_mlps[relation_name] = MLP(input_size, output_size)
-
-    def setup(self, relations: dict[str, torch.Tensor]) -> None:
-        """Cache per-forward relation metadata shared across layers.
-
-        Args:
-            relations: Dictionary mapping relation names to their argument indices.
-        """
-        active_relations: list[tuple[MLP, int, int]] = []
-        output_indices_list: list[torch.Tensor] = []
-        message_count = 0
-        for relation_name, argument_indices in relations.items():
-            if argument_indices.numel() == 0:
-                continue
-            relation_module: MLP = self._relation_mlps[relation_name]  # type: ignore
-            next_message_count = message_count + argument_indices.numel()
-            active_relations.append((relation_module, message_count, next_message_count))
-            output_indices_list.append(argument_indices)
-            message_count = next_message_count
-
-        if len(output_indices_list) == 0:
-            device = next(iter(relations.values())).device
-            output_indices = torch.empty(0, dtype=torch.int, device=device)
-        else:
-            output_indices = torch.cat(output_indices_list, 0)
-
-        self._cache = {
-            'active_relations': tuple(active_relations),
-            'message_count': message_count,
-            'output_indices': output_indices,
-        }
-
-    def cleanup(self) -> None:
-        """Clear cached relation metadata after the forward pass."""
-        self._cache = None
 
     def _forward_relation(self, relation_name: str, argument_embeddings: torch.Tensor) -> torch.Tensor:
         """Compute messages for a specific relation using its dedicated MLP.
@@ -100,23 +65,17 @@ class PredicateMLPMessages(MessageFunction):
         Returns:
             Tuple of (messages, indices) for aggregation.
         """
-        if self._cache is None:
-            self.setup(relations)
-        assert self._cache is not None, 'Relation cache must be available during forward.'
-        message_count = self._cache['message_count']
-        if message_count == 0:
-            output_messages = node_embeddings.new_empty((0, self._embedding_size))
-            output_indices: torch.Tensor = self._cache['output_indices']  # type: ignore
-            return output_messages, output_indices
-
-        output_indices: torch.Tensor = self._cache['output_indices']  # type: ignore
-        gathered_embeddings = torch.index_select(node_embeddings, 0, output_indices)
-        output_messages = node_embeddings.new_empty((message_count, self._embedding_size))
-        for relation_module, start_index, end_index in self._cache['active_relations']:
-            argument_embeddings = gathered_embeddings[start_index:end_index]
-            argument_messages = relation_module(argument_embeddings.view(-1, relation_module.input_size))
-            relation_output = (argument_embeddings.view_as(argument_messages) + argument_messages).view(-1, self._embedding_size)
-            output_messages[start_index:end_index] = relation_output
+        output_messages_list: list[torch.Tensor] = []
+        output_indices_list: list[torch.Tensor] = []
+        for relation_name, argument_indices in relations.items():
+            if argument_indices.numel() > 0:
+                argument_embeddings = torch.index_select(node_embeddings, 0, argument_indices)
+                argument_messages = self._forward_relation(relation_name, argument_embeddings)
+                output_messages = (argument_embeddings.view_as(argument_messages) + argument_messages).view(-1, self._embedding_size)
+                output_messages_list.append(output_messages)
+                output_indices_list.append(argument_indices)
+        output_messages = torch.cat(output_messages_list, 0)
+        output_indices = torch.cat(output_indices_list, 0)
         return output_messages, output_indices
 
 

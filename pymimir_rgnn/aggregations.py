@@ -27,9 +27,9 @@ class MeanAggregation(AggregationFunction):
             Aggregated messages with the same shape as node_embeddings.
         """
         sum_msg = torch.zeros_like(node_embeddings)
-        cnt_msg = torch.zeros((node_embeddings.shape[0], 1), dtype=node_embeddings.dtype, device=node_embeddings.device)
+        cnt_msg = torch.zeros_like(node_embeddings)
         sum_msg.index_add_(0, indices, messages)
-        cnt_msg.index_add_(0, indices, torch.ones((messages.shape[0], 1), dtype=messages.dtype, device=messages.device))
+        cnt_msg.index_add_(0, indices, torch.ones_like(messages))
         avg_msg = sum_msg / (cnt_msg + 1E-16)  # Avoid division by zero
         return avg_msg
 

@@ -39,23 +39,13 @@ class EncodedTensors:
         self.flattened_relations: dict[str, torch.Tensor] = {}
         self.node_count: int = 0
         self.node_sizes: torch.Tensor = torch.LongTensor()
-        self.node_sizes_list: tuple[int, ...] = ()
-        self.node_group_ends: torch.Tensor = torch.LongTensor()
         self.object_sizes: torch.Tensor = torch.LongTensor()
-        self.object_sizes_list: tuple[int, ...] = ()
-        self.object_group_ends: torch.Tensor = torch.LongTensor()
         self.object_indices: torch.Tensor = torch.LongTensor()
         self.action_sizes: torch.Tensor = torch.LongTensor()
-        self.action_sizes_list: tuple[int, ...] = ()
-        self.action_group_ends: torch.Tensor = torch.LongTensor()
         self.action_indices: torch.Tensor = torch.LongTensor()
         self.virtual_sizes: torch.Tensor = torch.LongTensor()
-        self.virtual_sizes_list: tuple[int, ...] = ()
-        self.virtual_group_ends: torch.Tensor = torch.LongTensor()
         self.virtual_indices: torch.Tensor = torch.LongTensor()
         self.auxiliary_sizes: torch.Tensor = torch.LongTensor()
-        self.auxiliary_sizes_list: tuple[int, ...] = ()
-        self.auxiliary_group_ends: torch.Tensor = torch.LongTensor()
         self.auxiliary_indices: torch.Tensor = torch.LongTensor()
 
 
@@ -66,26 +56,24 @@ class EncodingContext():
 
         # Map from object indices to global node IDs
         objects = problem.get_objects() + problem.get_domain().get_constants()
-        self._object_ids: list[int] = [i + id_offset for i in range(len(objects))]
-        self.object_index_to_id: dict[int, int] = { obj.get_index(): object_id for obj, object_id in zip(objects, self._object_ids) }
-        self._next_dynamic_id = id_offset + len(self._object_ids)
+        self.object_index_to_id: dict[int, int] = { obj.get_index(): i + id_offset for i, obj in enumerate(objects) }
         self.action_ids: list[int] = []
         self.virtual_ids: list[int] = []
         self.auxiliary_ids: dict[Any, int] = {}
-        self._auxiliary_id_values: list[int] = []
+
+    def _get_next_id(self) -> int:
+        return self.id_offset + len(self.object_index_to_id) + len(self.action_ids) + len(self.virtual_ids) + len(self.auxiliary_ids)
 
     def get_object_id(self, object_index: int) -> int:
         return self.object_index_to_id[object_index]
 
     def new_action_id(self) -> int:
-        action_id = self._next_dynamic_id
-        self._next_dynamic_id += 1
+        action_id = self._get_next_id()
         self.action_ids.append(action_id)
         return action_id
 
     def new_virtual_id(self) -> int:
-        virtual_id = self._next_dynamic_id
-        self._next_dynamic_id += 1
+        virtual_id = self._get_next_id()
         self.virtual_ids.append(virtual_id)
         return virtual_id
 
@@ -95,17 +83,15 @@ class EncodingContext():
     def new_or_existing_auxiliary_id(self, key: Any) -> int:
         if key in self.auxiliary_ids:
             return self.auxiliary_ids[key]
-        auxiliary_id = self._next_dynamic_id
-        self._next_dynamic_id += 1
+        auxiliary_id = self._get_next_id()
         self.auxiliary_ids[key] = auxiliary_id
-        self._auxiliary_id_values.append(auxiliary_id)
         return auxiliary_id
 
     def get_object_ids(self) -> list[int]:
-        return self._object_ids
+        return list(self.object_index_to_id.values())
 
     def get_object_count(self) -> int:
-        return len(self._object_ids)
+        return len(self.object_index_to_id)
 
     def get_action_ids(self) -> list[int]:
         return self.action_ids
@@ -120,13 +106,13 @@ class EncodingContext():
         return len(self.virtual_ids)
 
     def get_auxiliary_ids(self) -> list[int]:
-        return self._auxiliary_id_values
+        return list(self.auxiliary_ids.values())
 
     def get_auxiliary_count(self) -> int:
         return len(self.auxiliary_ids)
 
     def get_node_count(self) -> int:
-        return self._next_dynamic_id - self.id_offset
+        return self.get_object_count() + self.get_action_count() + self.get_virtual_count() + self.get_auxiliary_count()
 
 
 class Encoder(ABC):

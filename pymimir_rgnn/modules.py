@@ -52,23 +52,17 @@ class SumReadout(nn.Module):
         super().__init__()
         self._value = MLP(input_size, output_size)
 
-    def forward(self, node_embeddings: torch.Tensor, node_sizes: torch.Tensor, group_ends: torch.Tensor | None = None) -> torch.Tensor:
+    def forward(self, node_embeddings: torch.Tensor, node_sizes: torch.Tensor) -> torch.Tensor:
         """Aggregate embeddings by sum within groups and apply MLP.
 
         Args:
             node_embeddings: Node embeddings to aggregate.
             node_sizes: Number of nodes in each group.
-            group_ends: Optional cached final indices for each group.
 
         Returns:
             Aggregated and transformed embeddings, one per group.
         """
-        if group_ends is None:
-            group_ends = node_sizes.cumsum(0) - 1
-        cumsum_states = node_embeddings.cumsum(0).index_select(0, group_ends)
-        if cumsum_states.shape[0] == 0:
-            aggregated_embeddings = cumsum_states
-        else:
-            aggregated_embeddings = cumsum_states.clone()
-            aggregated_embeddings[1:] -= cumsum_states[:-1]
+        cumsum_indices = node_sizes.cumsum(0) - 1
+        cumsum_states = node_embeddings.cumsum(0).index_select(0, cumsum_indices)
+        aggregated_embeddings = torch.cat((cumsum_states[0].view(1, -1), cumsum_states[1:] - cumsum_states[0:-1]))
         return self._value(aggregated_embeddings)
