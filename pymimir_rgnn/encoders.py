@@ -186,17 +186,15 @@ class TransitionEffectsEncoder(Encoder):
         return relations
 
     def encode(self, input_value: Any, state: mm.State, encoding: 'EncodedLists', context: 'EncodingContext') -> None:
-        if isinstance(input_value, tuple):
-            effects_list = input_value[0]
-            effects_relations = input_value[1]
-        elif isinstance(input_value, list):
-            effects_list = input_value
-            effects_relations = []
-        else:
-            raise AssertionError(f'TransitionEffectsEncoder expected a list or tuple, got {type(input_value)}')
-
-        problem = state.get_problem()
-        goal_condition = problem.get_goal_condition()
+        assert isinstance(input_value, tuple) and len(input_value) == 3, (
+            f'TransitionEffectsEncoder expected a 3-tuple (effects_list, effects_relations, goal_condition), '
+            f'got {type(input_value)}'
+        )
+        effects_list, effects_relations, goal_condition = input_value
+        assert isinstance(goal_condition, mm.GroundConjunctiveCondition), (
+            f'TransitionEffectsEncoder expected a GroundConjunctiveCondition as the third element, '
+            f'got {type(goal_condition)}'
+        )
         goal_dictionary = {goal_literal.get_atom(): goal_literal for goal_literal in goal_condition}
         num_transitions = len(effects_list)
 
