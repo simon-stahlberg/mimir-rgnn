@@ -469,3 +469,71 @@ def test_expressive_encoders(domain_name: str):
     assert isinstance(value, torch.Tensor)
     assert value.numel() == 1
     assert not torch.isnan(value).any()
+
+
+def _make_decodable_model(domain: mm.Domain) -> RelationalGraphNeuralNetwork:
+    hparam_config = HyperparameterConfig(
+        domain=domain,
+        num_layers=4,
+        embedding_size=8,
+        normalize_updates=True,
+        channelwise_normalization=True,
+        residual_updates=False,
+        or_residual_updates=True,
+        binarize_updates=True,
+        ternarize_messages=True,
+    )
+    input_spec = (StateEncoder(), GoalEncoder())
+    output_spec = [('value', ObjectsScalarDecoder(hparam_config)), ('embeddings', ObjectsEmbeddingDecoder())]
+    module_config = ModuleConfig(
+        aggregation_function=HardMaximumAggregation(),
+        message_function=SenderOnlyMLPMessages(hparam_config, input_spec),
+        update_function=MLPUpdates(hparam_config)
+    )
+    return RelationalGraphNeuralNetwork(hparam_config, module_config, input_spec, output_spec)  # type: ignore
+
+
+@pytest.mark.parametrize("domain_name", [('blocks'), ('gripper')])
+def test_decodable_configuration(domain_name: str):
+    domain_path = DATA_DIR / domain_name / 'domain.pddl'
+    problem_path = DATA_DIR / domain_name / 'problem.pddl'
+    domain = mm.Domain(domain_path)
+    problem = mm.Problem(domain, problem_path)
+    model = _make_decodable_model(domain)
+    input = [(problem.get_initial_state(), problem.get_goal_condition())]
+    output = model.forward(input)
+    value = output.readout('value')
+    assert isinstance(value, torch.Tensor)
+    assert value.numel() == 1
+    assert not torch.isnan(value).any()
+    embeddings = output.readout('embeddings')
+    for instance_embeddings in embeddings:
+        unique_values = torch.unique(instance_embeddings)
+        assert all(v in (0.0, 1.0) for v in unique_values.tolist()), 'Embeddings must be binary.'
+
+
+@pytest.mark.parametrize("domain_name", [('blocks'), ('gripper')])
+def test_decodable_configuration_deterministic(domain_name: str):
+    domain_path = DATA_DIR / domain_name / 'domain.pddl'
+    problem_path = DATA_DIR / domain_name / 'problem.pddl'
+    domain = mm.Domain(domain_path)
+    problem = mm.Problem(domain, problem_path)
+    model = _make_decodable_model(domain)
+    input = [(problem.get_initial_state(), problem.get_goal_condition())]
+    embeddings_1 = model.forward(input).readout('embeddings')
+    embeddings_2 = model.forward(input).readout('embeddings')
+    for instance_embeddings_1, instance_embeddings_2 in zip(embeddings_1, embeddings_2):
+        assert torch.equal(instance_embeddings_1, instance_embeddings_2), 'Forward passes must be deterministic.'
+
+
+def test_invalid_hparam_combinations():
+    domain_path = DATA_DIR / 'blocks' / 'domain.pddl'
+    domain = mm.Domain(domain_path)
+    with pytest.raises(ValueError):
+        HyperparameterConfig(domain=domain, or_residual_updates=True, residual_updates=False, binarize_updates=False)
+    with pytest.raises(ValueError):
+        HyperparameterConfig(domain=domain, or_residual_updates=True, residual_updates=True, binarize_updates=True)
+    with pytest.raises(ValueError):
+        HyperparameterConfig(domain=domain, channelwise_normalization=True, normalize_updates=False)
+    with pytest.raises(ValueError):
+        HyperparameterConfig(domain=domain, residual_updates=True, binarize_updates=True)

@@ -55,9 +55,9 @@ from .bases import AggregationFunction, MessageFunction, UpdateFunction, Encoder
 from .configs import HyperparameterConfig, ModuleConfig
 from .decoders import ActionScalarDecoder, ActionEmbeddingDecoder, ObjectsScalarDecoder, ObjectsEmbeddingDecoder
 from .encoders import StateEncoder, GoalEncoder, GroundActionsEncoder, TransitionEffectsEncoder, ExpressiveStateEncoder, ExpressiveGoalEncoder
-from .messages import PredicateMLPMessages, AttentionMessages, AttentionMessagesBase
+from .messages import PredicateMLPMessages, SenderOnlyMLPMessages, AttentionMessages, AttentionMessagesBase
 from .model import ForwardState, RelationalGraphNeuralNetwork
-from .modules import MLP, SumReadout
+from .modules import MLP, ChannelwiseAffine, SumReadout
 from .updates import MLPUpdates
 
 __all__ = [
@@ -66,6 +66,7 @@ __all__ = [
     "AggregationFunction",
     "AttentionMessages",
     "AttentionMessagesBase",
+    "ChannelwiseAffine",
     "Decoder",
     "Encoder",
     "ExpressiveGoalEncoder",
@@ -84,6 +85,7 @@ __all__ = [
     "ObjectsScalarDecoder",
     "PredicateMLPMessages",
     "RelationalGraphNeuralNetwork",
+    "SenderOnlyMLPMessages",
     "SmoothMaximumAggregation",
     "StateEncoder",
     "SumAggregation",

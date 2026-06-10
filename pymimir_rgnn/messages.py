@@ -8,7 +8,7 @@ from .bases import Encoder, MessageFunction
 from .configs import HyperparameterConfig
 from .encoders import get_relations_from_encoders
 from .modules import MLP
-from .utils import gumbel_ternary
+from .utils import ternarize
 
 class PredicateMLPMessages(MessageFunction):
     """Message function using separate MLPs for each predicate relation.
@@ -79,7 +79,91 @@ class PredicateMLPMessages(MessageFunction):
         output_messages = torch.cat(output_messages_list, 0)
         output_indices = torch.cat(output_indices_list, 0)
         if self._ternarize_messages:
-            output_messages = gumbel_ternary(output_messages, hard=True)
+            output_messages = ternarize(output_messages)
+        return output_messages, output_indices
+
+
+class SenderOnlyMLPMessages(MessageFunction):
+    """Message function where messages depend only on the sender arguments.
+
+    For each relation and argument position, a dedicated MLP computes the message
+    delivered to that position from the embeddings of the *other* argument
+    positions only. The receiver's own embedding is neither an input to the MLP
+    nor added to the message; it reaches the update function separately through
+    the concatenation with the aggregated messages.
+
+    This makes each message channel a function of the senders alone, so that
+    (with ternarized messages and max aggregation) an aggregated channel has pure
+    role-restriction semantics: +1 iff some related object satisfies a concept
+    over its embedding bits. For binary relations the two position MLPs realize
+    the role and its inverse. Unary relations carry a learnable constant message,
+    marking atom membership itself.
+    """
+
+    def __init__(self,
+                 hparam_config: HyperparameterConfig,
+                 input_spec: tuple[Encoder, ...]):
+        """Initialize the sender-only MLP message function.
+
+        Args:
+            hparam_config: The hyperparameter configuration containing embedding sizes.
+            input_spec: The input specification to determine which relations exist.
+        """
+        super().__init__()
+        self._embedding_size = hparam_config.embedding_size
+        self._ternarize_messages = hparam_config.ternarize_messages
+        self._relation_arities: dict[str, int] = {}
+        self._position_mlps = nn.ModuleDict()
+        self._unary_messages = nn.ParameterDict()
+        relations = get_relations_from_encoders(hparam_config.domain, input_spec)
+        for relation_name, relation_arity in relations:
+            if relation_arity == 0:
+                continue
+            self._relation_arities[relation_name] = relation_arity
+            if relation_arity == 1:
+                # Std 1 so initial values straddle the ternarize threshold.
+                self._unary_messages[relation_name] = nn.Parameter(torch.randn(hparam_config.embedding_size))
+            else:
+                for position in range(relation_arity):
+                    input_size = (relation_arity - 1) * hparam_config.embedding_size
+                    self._position_mlps[f'{relation_name}@{position}'] = MLP(input_size, hparam_config.embedding_size)
+
+    def forward(self, node_embeddings: torch.Tensor, relations: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+        """Compute sender-only messages and indices for all relations.
+
+        Args:
+            node_embeddings: The current node embeddings.
+            relations: Dictionary mapping relation names to their argument indices.
+
+        Returns:
+            Tuple of (messages, indices) for aggregation.
+        """
+        output_messages_list: list[torch.Tensor] = []
+        output_indices_list: list[torch.Tensor] = []
+        for relation_name, argument_indices in relations.items():
+            if argument_indices.numel() == 0:
+                continue
+            if relation_name not in self._relation_arities:
+                raise ValueError(f"No message parameters found for relation '{relation_name}'")
+            arity = self._relation_arities[relation_name]
+            argument_embeddings = torch.index_select(node_embeddings, 0, argument_indices).view(-1, arity, self._embedding_size)
+            num_atoms = argument_embeddings.shape[0]
+            if arity == 1:
+                messages = self._unary_messages[relation_name].view(1, 1, -1).expand(num_atoms, 1, -1)
+            else:
+                position_messages: list[torch.Tensor] = []
+                for position in range(arity):
+                    sender_positions = [p for p in range(arity) if p != position]
+                    sender_embeddings = argument_embeddings[:, sender_positions, :].reshape(num_atoms, -1)
+                    position_mlp: MLP = self._position_mlps[f'{relation_name}@{position}']  # type: ignore
+                    position_messages.append(position_mlp(sender_embeddings))
+                messages = torch.stack(position_messages, dim=1)
+            output_messages_list.append(messages.reshape(-1, self._embedding_size))
+            output_indices_list.append(argument_indices)
+        output_messages = torch.cat(output_messages_list, 0)
+        output_indices = torch.cat(output_indices_list, 0)
+        if self._ternarize_messages:
+            output_messages = ternarize(output_messages)
         return output_messages, output_indices
 
 
@@ -276,7 +360,7 @@ class AttentionMessagesBase(MessageFunction):
         message_indices: torch.Tensor = self._cache['message_indices']  # type: ignore
         output_messages = transformed_embeddings.index_select(0, message_indices)
         if self._ternarize_messages:
-            output_messages = gumbel_ternary(output_messages, hard=True)
+            output_messages = ternarize(output_messages)
 
         output_indices: torch.Tensor = self._cache['output_indices']  # type: ignore
         return output_messages, output_indices

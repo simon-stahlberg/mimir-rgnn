@@ -34,6 +34,39 @@ class MLP(nn.Module):
         return self._outer(nn.functional.mish(self._inner(input)))
 
 
+class ChannelwiseAffine(nn.Module):
+    """Per-channel learnable affine transformation.
+
+    A channel-independent alternative to layer normalization: each channel is
+    scaled and shifted by its own learnable parameters, without any cross-channel
+    statistics. This keeps each output channel a function of the corresponding
+    input channel only, which is required when individual channels are to be
+    decoded into symbolic formulas. Followed by a binarizer, it acts as a
+    learnable per-channel threshold.
+    """
+
+    def __init__(self, size: int):
+        """Initialize the channelwise affine transformation.
+
+        Args:
+            size: Number of channels.
+        """
+        super().__init__()
+        self._gamma = nn.Parameter(torch.ones(size))
+        self._beta = nn.Parameter(torch.zeros(size))
+
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        """Apply the per-channel affine transformation.
+
+        Args:
+            input: Input tensor of shape (..., size).
+
+        Returns:
+            Output tensor of the same shape.
+        """
+        return input * self._gamma + self._beta
+
+
 class SumReadout(nn.Module):
     """Readout module that aggregates embeddings by summing within groups.
 

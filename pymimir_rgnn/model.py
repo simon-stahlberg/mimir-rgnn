@@ -10,8 +10,8 @@ from .bases import Encoder
 from .configs import HyperparameterConfig, ModuleConfig
 from .decoders import Decoder
 from .encoders import EncodedTensors, get_input_from_encoders
-from .modules import MLP, SumReadout
-from .utils import gumbel_sigmoid
+from .modules import MLP, ChannelwiseAffine, SumReadout
+from .utils import binarize
 
 
 class ForwardState:
@@ -110,7 +110,10 @@ class RelationalLayerStackModule(nn.Module):
             self._global_readout = SumReadout(hparam_config.embedding_size, hparam_config.embedding_size)
             self._global_update = MLP(2 * hparam_config.embedding_size, hparam_config.embedding_size)
         if hparam_config.normalize_updates:
-            self._update_normalization = nn.LayerNorm(hparam_config.embedding_size)
+            if hparam_config.channelwise_normalization:
+                self._update_normalization = ChannelwiseAffine(hparam_config.embedding_size)
+            else:
+                self._update_normalization = nn.LayerNorm(hparam_config.embedding_size)
         self._hooks: list[Callable[[int, torch.Tensor], None]] = []
 
     def _notify_hooks(self, iteration: int, embeddings: torch.Tensor) -> None:
@@ -158,9 +161,11 @@ class RelationalLayerStackModule(nn.Module):
                     global_messages = self._update_normalization(global_messages)
                 next_node_embeddings = global_messages + next_node_embeddings
             if self._config.binarize_updates:
-                next_node_embeddings = gumbel_sigmoid(next_node_embeddings, hard=True)
+                next_node_embeddings = binarize(next_node_embeddings)
             if self._config.residual_updates:
                 next_node_embeddings = node_embeddings + next_node_embeddings
+            elif self._config.or_residual_updates:
+                next_node_embeddings = torch.maximum(node_embeddings, next_node_embeddings)
             node_embeddings = next_node_embeddings
             self._notify_hooks(iteration, node_embeddings)
         self._message.cleanup()
