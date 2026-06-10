@@ -110,6 +110,7 @@ class RelationalLayerStackModule(nn.Module):
             self._global_readout = SumReadout(hparam_config.embedding_size, hparam_config.embedding_size)
             self._global_update = MLP(2 * hparam_config.embedding_size, hparam_config.embedding_size)
         if hparam_config.normalize_updates:
+            self._update_normalization: nn.Module
             if hparam_config.channelwise_normalization:
                 self._update_normalization = ChannelwiseAffine(hparam_config.embedding_size)
             else:
