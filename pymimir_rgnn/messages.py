@@ -8,6 +8,7 @@ from .bases import Encoder, MessageFunction
 from .configs import HyperparameterConfig
 from .encoders import get_relations_from_encoders
 from .modules import MLP
+from .utils import gumbel_ternary
 
 class PredicateMLPMessages(MessageFunction):
     """Message function using separate MLPs for each predicate relation.
@@ -28,6 +29,7 @@ class PredicateMLPMessages(MessageFunction):
         """
         super().__init__()
         self._embedding_size = hparam_config.embedding_size
+        self._ternarize_messages = hparam_config.ternarize_messages
         self._relation_mlps = nn.ModuleDict()
         relations = get_relations_from_encoders(hparam_config.domain, input_spec)
         for relation_name, relation_arity in relations:
@@ -76,6 +78,8 @@ class PredicateMLPMessages(MessageFunction):
                 output_indices_list.append(argument_indices)
         output_messages = torch.cat(output_messages_list, 0)
         output_indices = torch.cat(output_indices_list, 0)
+        if self._ternarize_messages:
+            output_messages = gumbel_ternary(output_messages, hard=True)
         return output_messages, output_indices
 
 
@@ -101,6 +105,7 @@ class AttentionMessagesBase(MessageFunction):
         """
         super().__init__()
         self._embedding_size = hparam_config.embedding_size
+        self._ternarize_messages = hparam_config.ternarize_messages
         self._cache: dict[str, Any]
 
         # TransformerEncoderLayer for parallel message computation
@@ -270,6 +275,8 @@ class AttentionMessagesBase(MessageFunction):
         # Extract object messages using pre-computed indices
         message_indices: torch.Tensor = self._cache['message_indices']  # type: ignore
         output_messages = transformed_embeddings.index_select(0, message_indices)
+        if self._ternarize_messages:
+            output_messages = gumbel_ternary(output_messages, hard=True)
 
         output_indices: torch.Tensor = self._cache['output_indices']  # type: ignore
         return output_messages, output_indices

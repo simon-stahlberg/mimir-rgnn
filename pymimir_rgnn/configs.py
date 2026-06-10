@@ -22,6 +22,8 @@ class HyperparameterConfig:
         global_readout: Whether to use a global readout for the node embeddings.
         residual_updates: Whether to use residual updates for the node embeddings.
         binarize_updates: Whether to binarize the updates for the node embeddings.
+        ternarize_messages: Whether to cast predicate-MLP messages into {-1, 0, 1}
+            via Gumbel-Softmax before aggregation.
     """
 
     domain: mm.Domain = field(
@@ -56,6 +58,12 @@ class HyperparameterConfig:
     binarize_updates: bool = field(
         default=False,
         metadata={'doc': 'Whether to binarize the updates for the node embeddings.'}
+    )
+
+    ternarize_messages: bool = field(
+        default=False,
+        metadata={'doc': 'Whether to cast predicate-MLP messages into {-1, 0, 1} via '
+                         'Gumbel-Softmax before aggregation.'}
     )
 
 
