@@ -7,7 +7,7 @@ from typing import Any
 from .bases import Encoder, MessageFunction
 from .configs import HyperparameterConfig
 from .encoders import get_relations_from_encoders
-from .modules import MLP
+from .modules import MLP, SparseMLP
 from .utils import ternarize
 
 class PredicateMLPMessages(MessageFunction):
@@ -67,6 +67,67 @@ class PredicateMLPMessages(MessageFunction):
         Returns:
             Tuple of (messages, indices) for aggregation.
         """
+        output_messages_list: list[torch.Tensor] = []
+        output_indices_list: list[torch.Tensor] = []
+        for relation_name, argument_indices in relations.items():
+            if argument_indices.numel() > 0:
+                argument_embeddings = torch.index_select(node_embeddings, 0, argument_indices)
+                argument_messages = self._forward_relation(relation_name, argument_embeddings)
+                output_messages = (argument_embeddings.view_as(argument_messages) + argument_messages).view(-1, self._embedding_size)
+                output_messages_list.append(output_messages)
+                output_indices_list.append(argument_indices)
+        output_messages = torch.cat(output_messages_list, 0)
+        output_indices = torch.cat(output_indices_list, 0)
+        if self._ternarize_messages:
+            output_messages = ternarize(output_messages)
+        return output_messages, output_indices
+
+
+class SparseMLPMessages(MessageFunction):
+    """PredicateMLPMessages variant where each relation MLP is a SparseMLP.
+
+    Each output feature of each relation MLP is connected to at most k input
+    features per layer. During training a Gumbel-Sigmoid gate produces a soft
+    differentiable mask; at eval time a deterministic top-k hard mask is used.
+    Call sparsity_penalty() and add it (scaled) to the external training loss.
+
+    Args:
+        hparam_config: Hyperparameter configuration.
+        input_spec: Encoder tuple that determines which relations exist.
+        k: Maximum number of active input connections per output row per layer.
+        tau: Temperature for the Gumbel-Sigmoid gate sampler (lower = harder).
+        linear: If True, use a single gated linear layer with no hidden layer or activation.
+    """
+
+    def __init__(self,
+                 hparam_config: HyperparameterConfig,
+                 input_spec: tuple[Encoder, ...],
+                 k: int,
+                 tau: float = 1.0,
+                 linear: bool = False):
+        super().__init__()
+        self._embedding_size = hparam_config.embedding_size
+        self._ternarize_messages = hparam_config.ternarize_messages
+        self._relation_mlps = nn.ModuleDict()
+        relations = get_relations_from_encoders(hparam_config.domain, input_spec)
+        for relation_name, relation_arity in relations:
+            input_size = relation_arity * hparam_config.embedding_size
+            output_size = relation_arity * hparam_config.embedding_size
+            if (input_size > 0) and (output_size > 0):
+                self._relation_mlps[relation_name] = SparseMLP(input_size, output_size, k=k, tau=tau, linear=linear)
+
+    def sparsity_penalty(self) -> torch.Tensor:
+        """Sum of SparseMLP sparsity penalties across all relation MLPs."""
+        penalties = [mlp.sparsity_penalty() for mlp in self._relation_mlps.values()]  # type: ignore[attr-defined, operator]
+        return torch.stack(penalties).sum() if penalties else torch.tensor(0.0)
+
+    def _forward_relation(self, relation_name: str, argument_embeddings: torch.Tensor) -> torch.Tensor:
+        if relation_name not in self._relation_mlps:
+            raise ValueError(f"No MLP found for relation '{relation_name}'")
+        relation_module: SparseMLP = self._relation_mlps[relation_name]  # type: ignore
+        return relation_module(argument_embeddings.view(-1, relation_module.input_size))
+
+    def forward(self, node_embeddings: torch.Tensor, relations: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
         output_messages_list: list[torch.Tensor] = []
         output_indices_list: list[torch.Tensor] = []
         for relation_name, argument_indices in relations.items():
