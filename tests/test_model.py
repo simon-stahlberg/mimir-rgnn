@@ -108,7 +108,7 @@ def test_forward_hook(domain_name: str):
     initial_state = problem.get_initial_state()
     original_goal = problem.get_goal_condition()
     input = [(initial_state, original_goal)]
-    hook_output = []
+    hook_output: list[tuple[int, torch.Tensor]] = []
     def hook_function(x: ForwardState):
         layer_index = x.get_layer_index()
         layer_readout = x.readout('value')
