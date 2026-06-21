@@ -79,7 +79,9 @@ class PredicateMLPMessages(MessageFunction):
         output_messages = torch.cat(output_messages_list, 0)
         output_indices = torch.cat(output_indices_list, 0)
         if self._ternarize_messages:
-            output_messages = ternarize(output_messages)
+            output_message_logits = output_messages
+            output_messages = ternarize(output_message_logits)
+            self._record_ternary_messages(output_message_logits, output_messages)
         return output_messages, output_indices
 
 
@@ -140,7 +142,9 @@ class SparseMLPMessages(MessageFunction):
         output_messages = torch.cat(output_messages_list, 0)
         output_indices = torch.cat(output_indices_list, 0)
         if self._ternarize_messages:
-            output_messages = ternarize(output_messages)
+            output_message_logits = output_messages
+            output_messages = ternarize(output_message_logits)
+            self._record_ternary_messages(output_message_logits, output_messages)
         return output_messages, output_indices
 
 
@@ -224,7 +228,9 @@ class SenderOnlyMLPMessages(MessageFunction):
         output_messages = torch.cat(output_messages_list, 0)
         output_indices = torch.cat(output_indices_list, 0)
         if self._ternarize_messages:
-            output_messages = ternarize(output_messages)
+            output_message_logits = output_messages
+            output_messages = ternarize(output_message_logits)
+            self._record_ternary_messages(output_message_logits, output_messages)
         return output_messages, output_indices
 
 
@@ -421,7 +427,9 @@ class AttentionMessagesBase(MessageFunction):
         message_indices: torch.Tensor = self._cache['message_indices']  # type: ignore
         output_messages = transformed_embeddings.index_select(0, message_indices)
         if self._ternarize_messages:
-            output_messages = ternarize(output_messages)
+            output_message_logits = output_messages
+            output_messages = ternarize(output_message_logits)
+            self._record_ternary_messages(output_message_logits, output_messages)
 
         output_indices: torch.Tensor = self._cache['output_indices']  # type: ignore
         return output_messages, output_indices

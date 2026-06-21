@@ -526,6 +526,106 @@ def test_decodable_configuration_deterministic(domain_name: str):
         assert torch.equal(instance_embeddings_1, instance_embeddings_2), 'Forward passes must be deterministic.'
 
 
+def test_quantization_records_on_decodable_configuration():
+    domain_path = DATA_DIR / 'blocks' / 'domain.pddl'
+    problem_path = DATA_DIR / 'blocks' / 'problem.pddl'
+    domain = mm.Domain(domain_path)
+    problem = mm.Problem(domain, problem_path)
+    model = _make_decodable_model(domain)
+    assert model.quantization_records() == ()
+
+    hook_records = []
+    def hook_function(x: ForwardState):
+        records = x.quantization_records()
+        assert len(records) > 0
+        assert all(record.layer_index == x.get_layer_index() for record in records)
+        hook_records.append(records)
+    model.add_hook(hook_function)
+
+    input = [(problem.get_initial_state(), problem.get_goal_condition())]
+    output = model.forward(input)
+    final_records = output.quantization_records()
+    model_records = model.quantization_records()
+    assert len(final_records) == len(model_records)
+    assert all(output_record is model_record for output_record, model_record in zip(final_records, model_records))
+    assert len(final_records) == sum(len(records) for records in hook_records)
+
+    kinds = {record.kind for record in final_records}
+    assert kinds == {'binary_update', 'ternary_message'}
+    for record in final_records:
+        assert record.logits.dtype.is_floating_point
+        assert record.logits.requires_grad
+        assert record.values.dtype.is_floating_point
+        if record.kind == 'binary_update':
+            assert record.thresholds == (0.0,)
+            assert set(torch.unique(record.values).tolist()).issubset({0.0, 1.0})
+        else:
+            assert record.thresholds == (-1.0, 1.0)
+            assert set(torch.unique(record.values).tolist()).issubset({-1.0, 0.0, 1.0})
+
+
+def test_quantization_records_empty_without_quantization():
+    domain_path = DATA_DIR / 'blocks' / 'domain.pddl'
+    problem_path = DATA_DIR / 'blocks' / 'problem.pddl'
+    domain = mm.Domain(domain_path)
+    problem = mm.Problem(domain, problem_path)
+    hparam_config = HyperparameterConfig(
+        domain=domain,
+        num_layers=2,
+        embedding_size=4,
+        binarize_updates=False,
+        ternarize_messages=False,
+    )
+    input_spec = (StateEncoder(), GoalEncoder())
+    output_spec = [('value', ObjectsScalarDecoder(hparam_config))]
+    module_config = ModuleConfig(
+        aggregation_function=MeanAggregation(),
+        message_function=PredicateMLPMessages(hparam_config, input_spec),
+        update_function=MLPUpdates(hparam_config)
+    )
+    model = RelationalGraphNeuralNetwork(hparam_config, module_config, input_spec, output_spec)  # type: ignore
+    input = [(problem.get_initial_state(), problem.get_goal_condition())]
+    output = model.forward(input)
+    assert output.quantization_records() == ()
+    assert model.quantization_records() == ()
+
+
+def test_boundary_margin_penalty():
+    binary_logits = torch.tensor([-0.10, 0.40], requires_grad=True)
+    ternary_logits = torch.tensor([-1.10, 0.00, 1.40], requires_grad=True)
+    records = (
+        QuantizationRecord(
+            kind='binary_update',
+            layer_index=0,
+            logits=binary_logits,
+            thresholds=(0.0,),
+            values=(binary_logits > 0).float(),
+        ),
+        QuantizationRecord(
+            kind='ternary_message',
+            layer_index=0,
+            logits=ternary_logits,
+            thresholds=(-1.0, 1.0),
+            values=(ternary_logits > 1.0).float() - (ternary_logits < -1.0).float(),
+        ),
+    )
+    penalty = boundary_margin_penalty(records, margin=0.25)
+    assert penalty.shape == ()
+    assert torch.isfinite(penalty)
+    assert penalty > 0
+    penalty.backward()
+    assert binary_logits.grad is not None
+    assert ternary_logits.grad is not None
+    assert binary_logits.grad.abs().sum() > 0
+    assert ternary_logits.grad.abs().sum() > 0
+
+    empty_penalty = boundary_margin_penalty((), margin=0.25, device=binary_logits.device, dtype=binary_logits.dtype)
+    assert empty_penalty.shape == ()
+    assert empty_penalty.device == binary_logits.device
+    assert empty_penalty.dtype == binary_logits.dtype
+    assert empty_penalty.item() == 0.0
+
+
 def test_invalid_hparam_combinations():
     domain_path = DATA_DIR / 'blocks' / 'domain.pddl'
     domain = mm.Domain(domain_path)

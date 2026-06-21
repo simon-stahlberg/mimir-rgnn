@@ -2,7 +2,19 @@ import pymimir as mm
 import torch
 
 from abc import ABC, abstractmethod
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Literal
+
+
+@dataclass(frozen=True)
+class QuantizationRecord:
+    """Bookkeeping for one quantization site in a forward pass."""
+
+    kind: Literal["binary_update", "ternary_message"]
+    layer_index: int
+    logits: torch.Tensor
+    thresholds: tuple[float, ...]
+    values: torch.Tensor
 
 
 class EncodedLists:
@@ -209,6 +221,30 @@ class MessageFunction(ABC, torch.nn.Module):
     def __init__(self):
         """Initialize the message function as a PyTorch module."""
         super().__init__()
+        self._quantization_layer_index: int | None = None
+        self._quantization_records: list[QuantizationRecord] = []
+
+    def begin_quantization_recording(self, layer_index: int) -> None:
+        """Start collecting quantization records for a message-passing layer."""
+        self._quantization_layer_index = layer_index
+        self._quantization_records = []
+
+    def quantization_records(self) -> tuple[QuantizationRecord, ...]:
+        """Return quantization records collected during the latest message pass."""
+        return tuple(self._quantization_records)
+
+    def _record_ternary_messages(self, logits: torch.Tensor, values: torch.Tensor, threshold: float = 1.0) -> None:
+        if self._quantization_layer_index is None:
+            return
+        self._quantization_records.append(
+            QuantizationRecord(
+                kind="ternary_message",
+                layer_index=self._quantization_layer_index,
+                logits=logits,
+                thresholds=(-threshold, threshold),
+                values=values,
+            )
+        )
 
     def setup(self, relations: dict[str, torch.Tensor]) -> None:
         """Optional setup before message computation.

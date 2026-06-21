@@ -6,7 +6,7 @@ from dataclasses import fields
 from pathlib import Path
 from typing import Any, Callable, Union
 
-from .bases import Encoder
+from .bases import Encoder, QuantizationRecord
 from .configs import HyperparameterConfig, ModuleConfig
 from .decoders import Decoder
 from .encoders import EncodedTensors, get_input_from_encoders
@@ -22,7 +22,12 @@ class ForwardState:
     extracting outputs at any layer.
     """
 
-    def __init__(self, layer_index: int, readouts: dict[str, Callable[[], Any]]):
+    def __init__(
+        self,
+        layer_index: int,
+        readouts: dict[str, Callable[[], Any]],
+        quantization_records: tuple[QuantizationRecord, ...] = (),
+    ):
         """Initialize the forward state.
 
         Args:
@@ -31,6 +36,7 @@ class ForwardState:
         """
         self._layer_index = layer_index
         self._readouts = readouts
+        self._quantization_records = quantization_records
 
     def get_layer_index(self) -> int:
         """Get the current layer index.
@@ -50,6 +56,10 @@ class ForwardState:
             The output from the specified readout function.
         """
         return self._readouts[name]()
+
+    def quantization_records(self) -> tuple[QuantizationRecord, ...]:
+        """Return quantization records associated with this forward state."""
+        return self._quantization_records
 
 class RelationalLayerModule(nn.Module):
     """Message passing module for relational graph neural networks.
@@ -106,6 +116,8 @@ class RelationalLayerStackModule(nn.Module):
         self._config = hparam_config
         self._relation_network = RelationalLayerModule(hparam_config, module_config)
         self._message = module_config.message_function
+        self._latest_quantization_records: tuple[QuantizationRecord, ...] = ()
+        self._latest_layer_quantization_records: tuple[QuantizationRecord, ...] = ()
         if hparam_config.global_readout:
             self._global_readout = SumReadout(hparam_config.embedding_size, hparam_config.embedding_size)
             self._global_update = MLP(2 * hparam_config.embedding_size, hparam_config.embedding_size)
@@ -126,6 +138,14 @@ class RelationalLayerStackModule(nn.Module):
         """
         for hook in self._hooks:
             hook(iteration, embeddings)
+
+    def quantization_records(self) -> tuple[QuantizationRecord, ...]:
+        """Return quantization records from the latest full forward pass."""
+        return self._latest_quantization_records
+
+    def layer_quantization_records(self) -> tuple[QuantizationRecord, ...]:
+        """Return quantization records from the latest completed layer."""
+        return self._latest_layer_quantization_records
 
     def add_hook(self, hook_func: Callable[[int, torch.Tensor], None]) -> None:
         """Add a hook function to be called at each layer.
@@ -151,8 +171,13 @@ class RelationalLayerStackModule(nn.Module):
         self._message.setup(input.flattened_relations)
         device = input.node_sizes.device
         node_embeddings: torch.Tensor = torch.zeros([int(input.node_sizes.sum()), self._config.embedding_size], dtype=torch.float, requires_grad=True, device=device)
+        all_quantization_records: list[QuantizationRecord] = []
+        self._latest_quantization_records = ()
+        self._latest_layer_quantization_records = ()
         for iteration in range(self._config.num_layers):
+            self._message.begin_quantization_recording(iteration)
             next_node_embeddings: torch.Tensor = self._relation_network(node_embeddings, input.flattened_relations)
+            layer_quantization_records = list(self._message.quantization_records())
             if self._config.normalize_updates:
                 next_node_embeddings = self._update_normalization(next_node_embeddings)
             if self._config.global_readout:
@@ -162,12 +187,25 @@ class RelationalLayerStackModule(nn.Module):
                     global_messages = self._update_normalization(global_messages)
                 next_node_embeddings = global_messages + next_node_embeddings
             if self._config.binarize_updates:
-                next_node_embeddings = binarize(next_node_embeddings)
+                update_logits = next_node_embeddings
+                next_node_embeddings = binarize(update_logits)
+                layer_quantization_records.append(
+                    QuantizationRecord(
+                        kind="binary_update",
+                        layer_index=iteration,
+                        logits=update_logits,
+                        thresholds=(0.0,),
+                        values=next_node_embeddings,
+                    )
+                )
             if self._config.residual_updates:
                 next_node_embeddings = node_embeddings + next_node_embeddings
             elif self._config.or_residual_updates:
                 next_node_embeddings = torch.maximum(node_embeddings, next_node_embeddings)
             node_embeddings = next_node_embeddings
+            self._latest_layer_quantization_records = tuple(layer_quantization_records)
+            all_quantization_records.extend(layer_quantization_records)
+            self._latest_quantization_records = tuple(all_quantization_records)
             self._notify_hooks(iteration, node_embeddings)
         self._message.cleanup()
         return node_embeddings
@@ -226,6 +264,7 @@ class RelationalGraphNeuralNetwork(nn.Module):
             self._readouts.add_module(output_name, decoder)
         self._dummy = nn.Parameter(torch.empty(0))
         self._hooks: list[Callable[[ForwardState], None]] = []
+        self._latest_quantization_records: tuple[QuantizationRecord, ...] = ()
 
     def _notify_hooks(self, forward_state: ForwardState) -> None:
         """Notify all registered hooks of the current forward state.
@@ -251,6 +290,10 @@ class RelationalGraphNeuralNetwork(nn.Module):
             The module configuration used by this model.
         """
         return self._module_config
+
+    def quantization_records(self) -> tuple[QuantizationRecord, ...]:
+        """Return quantization records from the latest full forward pass."""
+        return self._latest_quantization_records
 
     def add_hook(self, hook_func: Callable[[ForwardState], None]) -> None:
         """Add a hook function to be called during forward passes.
@@ -291,16 +334,17 @@ class RelationalGraphNeuralNetwork(nn.Module):
                 def make_readout_func(readout: Any) -> Callable[[], Any]:
                     return lambda: readout(node_embeddings, input)
                 curried_readouts = { name: make_readout_func(readout) for name, readout in self._readouts.items() }
-                forward_state = ForwardState(layer_index, curried_readouts)
+                forward_state = ForwardState(layer_index, curried_readouts, self._mpnn_module.layer_quantization_records())
                 self._notify_hooks(forward_state)
             self._mpnn_module.add_hook(hook_function)
         node_embeddings = self._mpnn_module.forward(input)
+        self._latest_quantization_records = self._mpnn_module.quantization_records()
         if len(self._hooks) > 0:
             self._mpnn_module.clear_hooks()
         def make_readout_func(readout: Any) -> Callable[[], Any]:
             return lambda: readout(node_embeddings, input)
         curried_readouts = { name: make_readout_func(readout) for name, readout in self._readouts.items() }
-        return ForwardState(self._hparam_config.num_layers - 1, curried_readouts)
+        return ForwardState(self._hparam_config.num_layers - 1, curried_readouts, self._latest_quantization_records)
 
     def forward(self, x: list[tuple]) -> ForwardState:  # type: ignore
         """Perform a forward pass through the R-GNN.

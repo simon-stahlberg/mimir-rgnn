@@ -1,6 +1,10 @@
 import pymimir as mm
 import torch
 
+from collections.abc import Iterable
+
+from .bases import QuantizationRecord
+
 
 def get_atom_name(atom: mm.GroundAtom, state: mm.State, is_goal_atom: bool, suffix: str) -> str:
     """Generate a relation name for an atom based on its context.
@@ -201,3 +205,44 @@ def ternarize(logits, tau=1.0, threshold=1.0) -> torch.Tensor:
     y_soft = torch.sigmoid((logits - threshold) / tau) - torch.sigmoid((-logits - threshold) / tau)
     y_hard = (logits > threshold).float() - (logits < -threshold).float()
     return y_hard.detach() - y_soft.detach() + y_soft
+
+
+def boundary_margin_penalty(
+    records: Iterable[QuantizationRecord],
+    margin: float,
+    *,
+    device: torch.device | None = None,
+    dtype: torch.dtype | None = None,
+) -> torch.Tensor:
+    """Penalize quantization logits that are close to a decision boundary.
+
+    Args:
+        records: Quantization records from a forward pass.
+        margin: Distance around each decision boundary to penalize.
+        device: Device for the zero tensor returned when no records are present.
+        dtype: Dtype for the zero tensor returned when no records are present.
+
+    Returns:
+        A scalar penalty with gradients flowing to the recorded logits.
+    """
+    if margin < 0:
+        raise ValueError("margin must be non-negative.")
+
+    penalties: list[torch.Tensor] = []
+    first_tensor: torch.Tensor | None = None
+    for record in records:
+        logits = record.logits
+        if first_tensor is None:
+            first_tensor = logits
+        if logits.numel() == 0:
+            continue
+        thresholds = torch.tensor(record.thresholds, device=logits.device, dtype=logits.dtype)
+        distances = (logits.unsqueeze(0) - thresholds.view(-1, *([1] * logits.dim()))).abs()
+        nearest_boundary = distances.amin(dim=0)
+        penalties.append(torch.relu(torch.as_tensor(margin, device=logits.device, dtype=logits.dtype) - nearest_boundary).mean())
+
+    if penalties:
+        return torch.stack(penalties).mean()
+    if first_tensor is not None:
+        return first_tensor.new_tensor(0.0)
+    return torch.tensor(0.0, device=device, dtype=dtype)

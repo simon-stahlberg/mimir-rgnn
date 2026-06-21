@@ -51,7 +51,7 @@ Example:
 """
 
 from .aggregations import HardMaximumAggregation, MeanAggregation, SmoothMaximumAggregation, SumAggregation
-from .bases import AggregationFunction, MessageFunction, UpdateFunction, Encoder, Decoder
+from .bases import AggregationFunction, MessageFunction, UpdateFunction, Encoder, Decoder, QuantizationRecord
 from .configs import HyperparameterConfig, ModuleConfig
 from .decoders import ActionScalarDecoder, ActionEmbeddingDecoder, ObjectsScalarDecoder, ObjectsEmbeddingDecoder
 from .encoders import StateEncoder, GoalEncoder, GroundActionsEncoder, TransitionEffectsEncoder, ExpressiveStateEncoder, ExpressiveGoalEncoder
@@ -59,6 +59,7 @@ from .messages import PredicateMLPMessages, SenderOnlyMLPMessages, SparseMLPMess
 from .model import ForwardState, RelationalGraphNeuralNetwork
 from .modules import MLP, SparseMLP, ChannelwiseAffine, SumReadout
 from .updates import MLPUpdates, SparseMLPUpdates
+from .utils import boundary_margin_penalty
 
 __all__ = [
     "ActionEmbeddingDecoder",
@@ -84,6 +85,7 @@ __all__ = [
     "ObjectsEmbeddingDecoder",
     "ObjectsScalarDecoder",
     "PredicateMLPMessages",
+    "QuantizationRecord",
     "RelationalGraphNeuralNetwork",
     "SenderOnlyMLPMessages",
     "SmoothMaximumAggregation",
@@ -95,4 +97,5 @@ __all__ = [
     "SumReadout",
     "TransitionEffectsEncoder",
     "UpdateFunction",
+    "boundary_margin_penalty",
 ]
