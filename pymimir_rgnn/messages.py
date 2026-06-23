@@ -85,6 +85,61 @@ class PredicateMLPMessages(MessageFunction):
         return output_messages, output_indices
 
 
+class PredicateLinearMessages(MessageFunction):
+    """Message function using separate linear maps for each predicate relation.
+
+    This is a linear-only counterpart to PredicateMLPMessages. Each relation
+    type gets its own linear layer from the concatenated argument embeddings to
+    relation-position messages. No argument residual is added.
+    """
+
+    def __init__(self,
+                 hparam_config: HyperparameterConfig,
+                 input_spec: tuple[Encoder, ...]):
+        """Initialize the relation-specific linear message function.
+
+        Args:
+            hparam_config: Hyperparameter configuration.
+            input_spec: Encoder tuple that determines which relations exist.
+        """
+        super().__init__()
+        self._embedding_size = hparam_config.embedding_size
+        self._ternarize_messages = hparam_config.ternarize_messages
+        self._relation_linears = nn.ModuleDict()
+        relations = get_relations_from_encoders(hparam_config.domain, input_spec)
+        for relation_name, relation_arity in relations:
+            input_size = relation_arity * hparam_config.embedding_size
+            output_size = relation_arity * hparam_config.embedding_size
+            if (input_size > 0) and (output_size > 0):
+                self._relation_linears[relation_name] = nn.Linear(input_size, output_size)
+
+    def _forward_relation(self, relation_name: str, argument_embeddings: torch.Tensor) -> torch.Tensor:
+        """Compute messages for a specific relation using its linear map."""
+        if relation_name not in self._relation_linears:
+            raise ValueError(f"No linear layer found for relation '{relation_name}'")
+        relation_module: nn.Linear = self._relation_linears[relation_name]  # type: ignore
+        return relation_module(argument_embeddings.view(-1, relation_module.in_features))
+
+    def forward(self, node_embeddings: torch.Tensor, relations: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+        """Compute linear messages and indices for all relations."""
+        output_messages_list: list[torch.Tensor] = []
+        output_indices_list: list[torch.Tensor] = []
+        for relation_name, argument_indices in relations.items():
+            if argument_indices.numel() > 0:
+                argument_embeddings = torch.index_select(node_embeddings, 0, argument_indices)
+                argument_messages = self._forward_relation(relation_name, argument_embeddings)
+                output_messages = argument_messages.view(-1, self._embedding_size)
+                output_messages_list.append(output_messages)
+                output_indices_list.append(argument_indices)
+        output_messages = torch.cat(output_messages_list, 0)
+        output_indices = torch.cat(output_indices_list, 0)
+        if self._ternarize_messages:
+            output_message_logits = output_messages
+            output_messages = ternarize(output_message_logits)
+            self._record_ternary_messages(output_message_logits, output_messages)
+        return output_messages, output_indices
+
+
 class SparseMLPMessages(MessageFunction):
     """PredicateMLPMessages variant with hard top-k gated linear relation maps.
 

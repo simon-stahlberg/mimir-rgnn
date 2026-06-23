@@ -55,10 +55,10 @@ from .bases import AggregationFunction, MessageFunction, UpdateFunction, Encoder
 from .configs import HyperparameterConfig, ModuleConfig
 from .decoders import ActionScalarDecoder, ActionEmbeddingDecoder, ObjectsScalarDecoder, ObjectsEmbeddingDecoder
 from .encoders import StateEncoder, GoalEncoder, GroundActionsEncoder, TransitionEffectsEncoder, ExpressiveStateEncoder, ExpressiveGoalEncoder
-from .messages import PredicateMLPMessages, SenderOnlyMLPMessages, SparseMLPMessages, AttentionMessages, AttentionMessagesBase
+from .messages import PredicateMLPMessages, PredicateLinearMessages, SenderOnlyMLPMessages, SparseMLPMessages, AttentionMessages, AttentionMessagesBase
 from .model import ForwardState, RelationalGraphNeuralNetwork
 from .modules import MLP, SparseMLP, ChannelwiseAffine, SumReadout
-from .updates import MLPUpdates, SparseMLPUpdates
+from .updates import MLPUpdates, LinearUpdates, SparseMLPUpdates
 from .utils import boundary_margin_penalty
 
 __all__ = [
@@ -77,6 +77,7 @@ __all__ = [
     "GroundActionsEncoder",
     "HardMaximumAggregation",
     "HyperparameterConfig",
+    "LinearUpdates",
     "MeanAggregation",
     "MessageFunction",
     "MLP",
@@ -84,6 +85,7 @@ __all__ = [
     "ModuleConfig",
     "ObjectsEmbeddingDecoder",
     "ObjectsScalarDecoder",
+    "PredicateLinearMessages",
     "PredicateMLPMessages",
     "QuantizationRecord",
     "RelationalGraphNeuralNetwork",

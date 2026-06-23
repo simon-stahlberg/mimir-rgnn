@@ -472,6 +472,141 @@ def test_expressive_encoders(domain_name: str):
     assert not torch.isnan(value).any()
 
 
+def test_predicate_linear_messages_forward_model():
+    domain_path = DATA_DIR / 'blocks' / 'domain.pddl'
+    problem_path = DATA_DIR / 'blocks' / 'problem.pddl'
+    domain = mm.Domain(domain_path)
+    problem = mm.Problem(domain, problem_path)
+    hparam_config = HyperparameterConfig(
+        domain=domain,
+        num_layers=2,
+        embedding_size=4,
+    )
+    input_spec = (StateEncoder(), GoalEncoder())
+    output_spec = [('value', ObjectsScalarDecoder(hparam_config))]
+    module_config = ModuleConfig(
+        aggregation_function=MeanAggregation(),
+        message_function=PredicateLinearMessages(hparam_config, input_spec),
+        update_function=MLPUpdates(hparam_config)
+    )
+    model = RelationalGraphNeuralNetwork(hparam_config, module_config, input_spec, output_spec)  # type: ignore
+    output = model.forward([(problem.get_initial_state(), problem.get_goal_condition())])
+    value = output.readout('value')
+    assert isinstance(value, torch.Tensor)
+    assert value.shape == (1,)
+    assert not torch.isnan(value).any()
+
+
+def test_linear_updates_forward_model():
+    domain_path = DATA_DIR / 'blocks' / 'domain.pddl'
+    problem_path = DATA_DIR / 'blocks' / 'problem.pddl'
+    domain = mm.Domain(domain_path)
+    problem = mm.Problem(domain, problem_path)
+    hparam_config = HyperparameterConfig(
+        domain=domain,
+        num_layers=2,
+        embedding_size=4,
+    )
+    input_spec = (StateEncoder(), GoalEncoder())
+    output_spec = [('value', ObjectsScalarDecoder(hparam_config))]
+    module_config = ModuleConfig(
+        aggregation_function=MeanAggregation(),
+        message_function=PredicateMLPMessages(hparam_config, input_spec),
+        update_function=LinearUpdates(hparam_config)
+    )
+    model = RelationalGraphNeuralNetwork(hparam_config, module_config, input_spec, output_spec)  # type: ignore
+    output = model.forward([(problem.get_initial_state(), problem.get_goal_condition())])
+    value = output.readout('value')
+    assert isinstance(value, torch.Tensor)
+    assert value.shape == (1,)
+    assert not torch.isnan(value).any()
+
+
+def test_predicate_linear_messages_shape_matches_predicate_messages():
+    domain_path = DATA_DIR / 'blocks' / 'domain.pddl'
+    domain = mm.Domain(domain_path)
+    hparam_config = HyperparameterConfig(domain=domain, embedding_size=3)
+    input_spec = (StateEncoder(), GoalEncoder())
+    linear_messages = PredicateLinearMessages(hparam_config, input_spec)
+    predicate_messages = PredicateMLPMessages(hparam_config, input_spec)
+    relation_name, module = next(iter(linear_messages._relation_linears.items()))
+    relation_module = cast(torch.nn.Linear, module)
+    arity = relation_module.in_features // hparam_config.embedding_size
+    argument_indices = torch.arange(arity, dtype=torch.long)
+    node_embeddings = torch.randn(arity, hparam_config.embedding_size)
+
+    linear_output, linear_indices = linear_messages(node_embeddings, {relation_name: argument_indices})
+    predicate_output, predicate_indices = predicate_messages(node_embeddings, {relation_name: argument_indices})
+
+    assert linear_output.shape == predicate_output.shape
+    assert torch.equal(linear_indices, predicate_indices)
+
+
+def test_predicate_linear_messages_has_no_argument_residual():
+    domain_path = DATA_DIR / 'blocks' / 'domain.pddl'
+    domain = mm.Domain(domain_path)
+    hparam_config = HyperparameterConfig(domain=domain, embedding_size=3)
+    input_spec = (StateEncoder(), GoalEncoder())
+    linear_messages = PredicateLinearMessages(hparam_config, input_spec)
+    relation_name, module = next(iter(linear_messages._relation_linears.items()))
+    relation_module = cast(torch.nn.Linear, module)
+    arity = relation_module.in_features // hparam_config.embedding_size
+    argument_indices = torch.arange(arity, dtype=torch.long)
+    node_embeddings = torch.arange(arity * hparam_config.embedding_size, dtype=torch.float).view(arity, hparam_config.embedding_size) + 1.0
+    with torch.no_grad():
+        relation_module.weight.zero_()
+        relation_module.bias.zero_()
+
+    output_messages, output_indices = linear_messages(node_embeddings, {relation_name: argument_indices})
+
+    assert output_messages.shape == (arity, hparam_config.embedding_size)
+    assert torch.equal(output_indices, argument_indices)
+    assert torch.allclose(output_messages, torch.zeros_like(output_messages))
+    assert not torch.allclose(output_messages, node_embeddings)
+
+
+def test_predicate_linear_messages_ternarizes_and_records_quantization():
+    domain_path = DATA_DIR / 'blocks' / 'domain.pddl'
+    domain = mm.Domain(domain_path)
+    hparam_config = HyperparameterConfig(
+        domain=domain,
+        embedding_size=3,
+        ternarize_messages=True,
+    )
+    input_spec = (StateEncoder(), GoalEncoder())
+    linear_messages = PredicateLinearMessages(hparam_config, input_spec)
+    relation_name, module = next(iter(linear_messages._relation_linears.items()))
+    relation_module = cast(torch.nn.Linear, module)
+    arity = relation_module.in_features // hparam_config.embedding_size
+    argument_indices = torch.arange(arity, dtype=torch.long)
+    node_embeddings = torch.randn(arity, hparam_config.embedding_size)
+
+    linear_messages.begin_quantization_recording(layer_index=7)
+    output_messages, _ = linear_messages(node_embeddings, {relation_name: argument_indices})
+    records = linear_messages.quantization_records()
+
+    assert len(records) == 1
+    assert records[0].kind == 'ternary_message'
+    assert records[0].layer_index == 7
+    assert records[0].thresholds == (-1.0, 1.0)
+    assert torch.equal(records[0].values, output_messages)
+    assert set(torch.unique(output_messages).tolist()).issubset({-1.0, 0.0, 1.0})
+
+
+def test_linear_updates_matches_underlying_linear_layer():
+    domain_path = DATA_DIR / 'blocks' / 'domain.pddl'
+    domain = mm.Domain(domain_path)
+    hparam_config = HyperparameterConfig(domain=domain, embedding_size=3)
+    linear_updates = LinearUpdates(hparam_config)
+    node_embeddings = torch.randn(5, hparam_config.embedding_size)
+    aggregated_messages = torch.randn(5, hparam_config.embedding_size)
+
+    output = linear_updates(node_embeddings, aggregated_messages)
+    expected = linear_updates._update(torch.cat((aggregated_messages, node_embeddings), 1))
+
+    assert torch.allclose(output, expected)
+
+
 def test_sparse_mlp_eval_mask_has_topk_active_inputs():
     sparse_mlp = SparseMLP(input_size=5, output_size=3, k=2)
     sparse_mlp.eval()

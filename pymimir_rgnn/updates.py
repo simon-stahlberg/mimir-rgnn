@@ -37,6 +37,27 @@ class MLPUpdates(UpdateFunction):
         return self._update(torch.cat((aggregated_messages, node_embeddings), 1))
 
 
+class LinearUpdates(UpdateFunction):
+    """Update function using a linear layer for node embedding updates.
+
+    This update function computes new node embeddings from the concatenation of
+    aggregated messages and current node embeddings using a single linear layer.
+    """
+
+    def __init__(self, hparam_config: HyperparameterConfig):
+        """Initialize the linear update function.
+
+        Args:
+            hparam_config: Hyperparameter configuration.
+        """
+        super().__init__()
+        self._update = torch.nn.Linear(2 * hparam_config.embedding_size, hparam_config.embedding_size)
+
+    def forward(self, node_embeddings: torch.Tensor, aggregated_messages: torch.Tensor) -> torch.Tensor:
+        """Update node embeddings using the linear layer."""
+        return self._update(torch.cat((aggregated_messages, node_embeddings), 1))
+
+
 class SparseMLPUpdates(UpdateFunction):
     """MLPUpdates variant with a hard top-k gated linear update map.
 
