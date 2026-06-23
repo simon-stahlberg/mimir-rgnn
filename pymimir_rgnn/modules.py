@@ -1,7 +1,7 @@
+from typing import Literal
+
 import torch
 import torch.nn as nn
-
-from .utils import gumbel_sigmoid
 
 
 class MLP(nn.Module):
@@ -37,53 +37,69 @@ class MLP(nn.Module):
 
 
 class SparseMLP(nn.Module):
-    """Sparse linear layer or two-layer MLP with learned L0-style input-sparsity gates.
+    """Hard top-k gated linear layer for interpretable input dependencies.
 
-    Each output neuron of each linear layer is connected to at most k of its
-    direct input neurons. During training, gates are sampled from a Binary
-    Concrete distribution (gumbel_sigmoid). At eval time, a deterministic
-    top-k hard mask is used so exactly k inputs are active per output row.
-
-    When linear=True the module is a single gated linear layer (no hidden layer,
-    no activation). When linear=False (default) it is a two-layer MLP with Mish
-    activation and independent gates on both layers.
-
-    Call sparsity_penalty() and add it (scaled) to the training loss.
+    Each output feature is a linear function of at most k original input
+    features. The implementation still uses dense PyTorch linear operations,
+    with a hard top-k mask applied to the dense weight matrix. The hard top-k
+    gates enforce the exact active-input count; topk_margin_penalty() can be
+    added to a training loss to encourage stable separation between selected
+    and rejected gate logits.
     """
 
-    def __init__(self, input_size: int, output_size: int, k: int, tau: float = 1.0, linear: bool = False):
+    def __init__(
+        self,
+        input_size: int,
+        output_size: int,
+        k: int,
+        tau: float = 1.0,
+        gate_mode: Literal["gumbel_topk", "deterministic_topk"] = "gumbel_topk",
+    ):
         """Initialize the sparse MLP.
 
         Args:
             input_size: Size of the input features.
             output_size: Size of the output features.
-            k: Maximum number of active input connections per output neuron per layer.
-            tau: Temperature for the Gumbel-Sigmoid gate sampler (lower = harder).
-            linear: If True, use a single gated linear layer with no activation.
+            k: Maximum number of active input connections per output feature.
+            tau: Temperature for the straight-through sigmoid surrogate.
+            gate_mode: Training-time hard top-k mode. Evaluation always uses
+                deterministic top-k.
         """
         super().__init__()
+        if k < 0:
+            raise ValueError("k must be non-negative")
+        if gate_mode not in ("gumbel_topk", "deterministic_topk"):
+            raise ValueError("gate_mode must be 'gumbel_topk' or 'deterministic_topk'")
         self.input_size = input_size
         self.output_size = output_size
         self._k = k
         self._tau = tau
-        self._linear = linear
+        self._gate_mode = gate_mode
         self._outer = nn.Linear(input_size, output_size, True)
         self._outer_log_alpha = nn.Parameter(torch.zeros(output_size, input_size))
-        if not linear:
-            self._inner = nn.Linear(input_size, input_size, True)
-            self._inner_log_alpha = nn.Parameter(torch.zeros(input_size, input_size))
 
-    def _hard_topk_gate(self, log_alpha: torch.Tensor) -> torch.Tensor:
-        k = min(self._k, log_alpha.size(1))
-        indices = torch.sigmoid(log_alpha).topk(k, dim=1).indices
-        mask = torch.zeros_like(log_alpha)
+    def _hard_topk_gate(self, scores: torch.Tensor) -> torch.Tensor:
+        k = min(self._k, scores.size(1))
+        if k == 0:
+            return torch.zeros_like(scores)
+        indices = scores.topk(k, dim=1).indices
+        mask = torch.zeros_like(scores)
         mask.scatter_(1, indices, 1.0)
         return mask
 
+    def _gumbel_noise(self, input: torch.Tensor, eps: float = 1e-10) -> torch.Tensor:
+        uniform = torch.rand_like(input)
+        return -torch.log(-torch.log(uniform + eps) + eps)
+
     def _gate(self, log_alpha: torch.Tensor) -> torch.Tensor:
-        if self.training:
-            return gumbel_sigmoid(log_alpha, tau=self._tau)
-        return self._hard_topk_gate(log_alpha)
+        scores = log_alpha
+        if self.training and self._gate_mode == "gumbel_topk":
+            scores = scores + self._gumbel_noise(scores)
+        hard = self._hard_topk_gate(scores)
+        if not self.training:
+            return hard
+        soft = torch.sigmoid(scores / self._tau)
+        return hard.detach() - soft.detach() + soft
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         """Forward pass through the sparse MLP.
@@ -94,21 +110,31 @@ class SparseMLP(nn.Module):
         Returns:
             Output tensor of shape (..., output_size).
         """
-        if self._linear:
-            x = input
-        else:
-            x = nn.functional.mish(
-                nn.functional.linear(input, self._inner.weight * self._gate(self._inner_log_alpha), self._inner.bias)
-            )
-        return nn.functional.linear(x, self._outer.weight * self._gate(self._outer_log_alpha), self._outer.bias)
+        return nn.functional.linear(input, self._outer.weight * self._gate(self._outer_log_alpha), self._outer.bias)
 
-    def sparsity_penalty(self) -> torch.Tensor:
-        """Expected excess connections above k per row, summed over active layers."""
-        outer_excess = torch.relu(torch.sigmoid(self._outer_log_alpha).sum(dim=1) - self._k)
-        if self._linear:
-            return outer_excess.sum()
-        inner_excess = torch.relu(torch.sigmoid(self._inner_log_alpha).sum(dim=1) - self._k)
-        return inner_excess.sum() + outer_excess.sum()
+    def topk_margin_penalty(self, margin: float) -> torch.Tensor:
+        """Penalize small gaps at the top-k gate selection boundary.
+
+        The penalty is based on raw deterministic gate logits, not Gumbel-noisy
+        training scores. It is zero when the weakest selected logit exceeds the
+        strongest rejected logit by at least margin.
+
+        Args:
+            margin: Required gap between the kth and (k+1)th gate logits.
+
+        Returns:
+            Scalar mean penalty across output rows.
+        """
+        if margin < 0:
+            raise ValueError("margin must be non-negative")
+        log_alpha = self._outer_log_alpha
+        if log_alpha.numel() == 0 or self._k == 0 or self._k >= log_alpha.size(1):
+            return log_alpha.new_tensor(0.0)
+        values = log_alpha.topk(self._k + 1, dim=1).values
+        kth_selected = values[:, self._k - 1]
+        best_rejected = values[:, self._k]
+        gap = kth_selected - best_rejected
+        return torch.relu(torch.as_tensor(margin, device=log_alpha.device, dtype=log_alpha.dtype) - gap).mean()
 
 
 class ChannelwiseAffine(nn.Module):

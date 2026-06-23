@@ -1,3 +1,5 @@
+from typing import Literal
+
 import torch
 
 from .bases import UpdateFunction
@@ -36,27 +38,35 @@ class MLPUpdates(UpdateFunction):
 
 
 class SparseMLPUpdates(UpdateFunction):
-    """MLPUpdates variant where the update MLP is a SparseMLP.
+    """MLPUpdates variant with a hard top-k gated linear update map.
 
-    Each output feature of the update MLP is connected to at most k input
-    features per layer. During training a Gumbel-Sigmoid gate produces a soft
-    differentiable mask; at eval time a deterministic top-k hard mask is used.
-    Call sparsity_penalty() and add it (scaled) to the external training loss.
+    Each output feature is a linear function of at most k original input
+    features. The implementation still uses dense PyTorch linear operations,
+    with a hard top-k mask applied to the dense weight matrix. The top-k margin
+    penalty encourages stable separation between selected and rejected gate
+    logits.
 
     Args:
         hparam_config: Hyperparameter configuration.
-        k: Maximum number of active input connections per output row per layer.
-        tau: Temperature for the Gumbel-Sigmoid gate sampler (lower = harder).
-        linear: If True, use a single gated linear layer with no hidden layer or activation.
+        k: Maximum number of active input connections per output feature.
+        tau: Temperature for the straight-through sigmoid surrogate.
+        gate_mode: Training-time hard top-k mode. Evaluation always uses
+            deterministic top-k.
     """
 
-    def __init__(self, hparam_config: HyperparameterConfig, k: int, tau: float = 1.0, linear: bool = False):
+    def __init__(
+        self,
+        hparam_config: HyperparameterConfig,
+        k: int,
+        tau: float = 1.0,
+        gate_mode: Literal["gumbel_topk", "deterministic_topk"] = "gumbel_topk",
+    ):
         super().__init__()
-        self._update = SparseMLP(2 * hparam_config.embedding_size, hparam_config.embedding_size, k=k, tau=tau, linear=linear)
+        self._update = SparseMLP(2 * hparam_config.embedding_size, hparam_config.embedding_size, k=k, tau=tau, gate_mode=gate_mode)
 
-    def sparsity_penalty(self) -> torch.Tensor:
-        """SparseMLP sparsity penalty for the update network."""
-        return self._update.sparsity_penalty()
+    def topk_margin_penalty(self, margin: float) -> torch.Tensor:
+        """SparseMLP top-k margin penalty for the update network."""
+        return self._update.topk_margin_penalty(margin)
 
     def forward(self, node_embeddings: torch.Tensor, aggregated_messages: torch.Tensor) -> torch.Tensor:
         """Update node embeddings using the sparse MLP.

@@ -3,6 +3,7 @@ import pytest
 import torch
 
 from pathlib import Path
+from typing import Literal, cast
 from pymimir_rgnn import *
 
 
@@ -469,6 +470,189 @@ def test_expressive_encoders(domain_name: str):
     assert isinstance(value, torch.Tensor)
     assert value.numel() == 1
     assert not torch.isnan(value).any()
+
+
+def test_sparse_mlp_eval_mask_has_topk_active_inputs():
+    sparse_mlp = SparseMLP(input_size=5, output_size=3, k=2)
+    sparse_mlp.eval()
+    gate = sparse_mlp._gate(sparse_mlp._outer_log_alpha)
+    assert gate.shape == (3, 5)
+    assert torch.equal(gate.sum(dim=1), torch.full((3,), 2.0))
+    assert set(torch.unique(gate).tolist()).issubset({0.0, 1.0})
+
+
+def test_sparse_mlp_k_zero_output_depends_only_on_bias():
+    sparse_mlp = SparseMLP(input_size=4, output_size=2, k=0)
+    input = torch.randn(6, 4)
+    output = sparse_mlp(input)
+    expected = sparse_mlp._outer.bias.view(1, -1).expand_as(output)
+    assert torch.allclose(output, expected)
+
+
+def test_sparse_mlp_k_larger_than_input_activates_all_inputs():
+    sparse_mlp = SparseMLP(input_size=4, output_size=2, k=10)
+    sparse_mlp.eval()
+    gate = sparse_mlp._gate(sparse_mlp._outer_log_alpha)
+    assert torch.equal(gate, torch.ones_like(gate))
+
+
+@pytest.mark.parametrize("gate_mode", ["gumbel_topk", "deterministic_topk"])
+def test_sparse_mlp_training_gate_is_hard(gate_mode: Literal["gumbel_topk", "deterministic_topk"]):
+    sparse_mlp = SparseMLP(input_size=5, output_size=3, k=2, gate_mode=gate_mode)
+    sparse_mlp.train()
+    gate = sparse_mlp._gate(sparse_mlp._outer_log_alpha)
+    assert torch.equal(gate.sum(dim=1), torch.full((3,), 2.0))
+    assert set(torch.unique(gate.detach()).tolist()).issubset({0.0, 1.0})
+
+
+def test_sparse_mlp_gumbel_topk_explores_tied_logits():
+    sparse_mlp = SparseMLP(input_size=4, output_size=1, k=2, gate_mode="gumbel_topk")
+    sparse_mlp.train()
+    masks = {
+        tuple(sparse_mlp._gate(sparse_mlp._outer_log_alpha).detach().view(-1).tolist())
+        for _ in range(20)
+    }
+    assert len(masks) > 1
+
+
+def test_sparse_mlp_rejects_invalid_configuration():
+    with pytest.raises(ValueError):
+        SparseMLP(input_size=4, output_size=2, k=-1)
+    with pytest.raises(ValueError):
+        SparseMLP(input_size=4, output_size=2, k=1, gate_mode="soft")  # type: ignore[arg-type]
+
+
+def test_sparse_mlp_topk_margin_penalty_zero_when_gap_is_large():
+    sparse_mlp = SparseMLP(input_size=4, output_size=2, k=2)
+    with torch.no_grad():
+        sparse_mlp._outer_log_alpha.copy_(
+            torch.tensor([
+                [4.0, 3.0, 0.0, -1.0],
+                [5.0, 2.0, 0.5, -2.0],
+            ])
+        )
+    penalty = sparse_mlp.topk_margin_penalty(margin=1.0)
+    assert penalty.shape == ()
+    assert penalty.item() == 0.0
+
+
+def test_sparse_mlp_topk_margin_penalty_positive_when_boundary_is_close():
+    sparse_mlp = SparseMLP(input_size=4, output_size=2, k=2)
+    with torch.no_grad():
+        sparse_mlp._outer_log_alpha.copy_(
+            torch.tensor([
+                [4.0, 3.0, 2.5, -1.0],
+                [5.0, 2.0, 1.8, -2.0],
+            ])
+        )
+    penalty = sparse_mlp.topk_margin_penalty(margin=1.0)
+    assert torch.allclose(penalty, torch.tensor(0.65))
+
+
+def test_sparse_mlp_topk_margin_penalty_has_gate_gradients():
+    sparse_mlp = SparseMLP(input_size=4, output_size=1, k=2)
+    with torch.no_grad():
+        sparse_mlp._outer_log_alpha.copy_(torch.tensor([[4.0, 3.0, 2.5, -1.0]]))
+    penalty = sparse_mlp.topk_margin_penalty(margin=1.0)
+    penalty.backward()
+    assert sparse_mlp._outer_log_alpha.grad is not None
+    assert sparse_mlp._outer_log_alpha.grad.abs().sum() > 0
+
+
+def test_sparse_mlp_topk_margin_penalty_zero_without_ranking_boundary():
+    k_zero = SparseMLP(input_size=4, output_size=2, k=0)
+    all_active = SparseMLP(input_size=4, output_size=2, k=4)
+    more_than_all_active = SparseMLP(input_size=4, output_size=2, k=10)
+
+    assert k_zero.topk_margin_penalty(margin=1.0).item() == 0.0
+    assert all_active.topk_margin_penalty(margin=1.0).item() == 0.0
+    assert more_than_all_active.topk_margin_penalty(margin=1.0).item() == 0.0
+
+
+def test_sparse_mlp_topk_margin_penalty_rejects_negative_margin():
+    sparse_mlp = SparseMLP(input_size=4, output_size=2, k=2)
+    with pytest.raises(ValueError):
+        sparse_mlp.topk_margin_penalty(margin=-1.0)
+
+
+def test_sparse_mlp_messages_shape_and_no_residual_bypass():
+    domain_path = DATA_DIR / 'blocks' / 'domain.pddl'
+    domain = mm.Domain(domain_path)
+    hparam_config = HyperparameterConfig(
+        domain=domain,
+        embedding_size=3,
+    )
+    input_spec = (StateEncoder(), GoalEncoder())
+    sparse_messages = SparseMLPMessages(hparam_config, input_spec, k=0, gate_mode="deterministic_topk")
+    relation_name, module = next(iter(sparse_messages._relation_mlps.items()))
+    relation_module = cast(SparseMLP, module)
+    arity = relation_module.input_size // hparam_config.embedding_size
+    argument_indices = torch.arange(arity, dtype=torch.long)
+    node_embeddings = torch.arange(arity * hparam_config.embedding_size, dtype=torch.float).view(arity, hparam_config.embedding_size) + 1.0
+
+    with torch.no_grad():
+        relation_module._outer.bias.zero_()
+    output_messages, output_indices = sparse_messages(node_embeddings, {relation_name: argument_indices})
+
+    assert output_messages.shape == (arity, hparam_config.embedding_size)
+    assert torch.equal(output_indices, argument_indices)
+    assert torch.allclose(output_messages, torch.zeros_like(output_messages))
+    assert not torch.allclose(output_messages, node_embeddings)
+
+
+def test_sparse_mlp_messages_rejects_removed_linear_argument():
+    domain_path = DATA_DIR / 'blocks' / 'domain.pddl'
+    domain = mm.Domain(domain_path)
+    hparam_config = HyperparameterConfig(domain=domain)
+    input_spec = (StateEncoder(), GoalEncoder())
+    with pytest.raises(TypeError):
+        SparseMLPMessages(hparam_config, input_spec, k=1, linear=True)  # type: ignore[call-arg]
+
+
+def test_sparse_mlp_messages_topk_margin_penalty_averages_relations():
+    domain_path = DATA_DIR / 'blocks' / 'domain.pddl'
+    domain = mm.Domain(domain_path)
+    hparam_config = HyperparameterConfig(domain=domain, embedding_size=2)
+    input_spec = (StateEncoder(), GoalEncoder())
+    sparse_messages = SparseMLPMessages(hparam_config, input_spec, k=1, gate_mode="deterministic_topk")
+
+    expected_penalties: list[torch.Tensor] = []
+    for index, module in enumerate(sparse_messages._relation_mlps.values()):
+        relation_module = cast(SparseMLP, module)
+        with torch.no_grad():
+            relation_module._outer_log_alpha.zero_()
+            relation_module._outer_log_alpha[:, 0] = 1.0 + index
+            relation_module._outer_log_alpha[:, 1] = 0.5
+        expected_penalties.append(relation_module.topk_margin_penalty(margin=1.0))
+
+    penalty = sparse_messages.topk_margin_penalty(margin=1.0)
+    assert torch.allclose(penalty, torch.stack(expected_penalties).mean())
+
+
+def test_sparse_mlp_messages_topk_margin_penalty_empty_module_is_zero():
+    domain_path = DATA_DIR / 'blocks' / 'domain.pddl'
+    domain = mm.Domain(domain_path)
+    hparam_config = HyperparameterConfig(domain=domain, embedding_size=2)
+    sparse_messages = SparseMLPMessages(hparam_config, input_spec=(), k=1)
+    penalty = sparse_messages.topk_margin_penalty(margin=1.0)
+    assert penalty.shape == ()
+    assert penalty.item() == 0.0
+
+
+def test_sparse_mlp_updates_topk_margin_penalty_delegates_to_update_network():
+    domain_path = DATA_DIR / 'blocks' / 'domain.pddl'
+    domain = mm.Domain(domain_path)
+    hparam_config = HyperparameterConfig(domain=domain, embedding_size=2)
+    sparse_updates = SparseMLPUpdates(hparam_config, k=1, gate_mode="deterministic_topk")
+    with torch.no_grad():
+        sparse_updates._update._outer_log_alpha.zero_()
+        sparse_updates._update._outer_log_alpha[:, 0] = 1.0
+        sparse_updates._update._outer_log_alpha[:, 1] = 0.25
+
+    assert torch.allclose(
+        sparse_updates.topk_margin_penalty(margin=1.0),
+        sparse_updates._update.topk_margin_penalty(margin=1.0),
+    )
 
 
 def _make_decodable_model(domain: mm.Domain) -> RelationalGraphNeuralNetwork:
