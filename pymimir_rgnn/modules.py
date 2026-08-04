@@ -11,18 +11,20 @@ class MLP(nn.Module):
     throughout the library as a basic building block for learnable transformations.
     """
 
-    def __init__(self, input_size: int, output_size: int):
+    def __init__(self, input_size: int, output_size: int, hidden_size: int | None = None):
         """Initialize the MLP.
 
         Args:
             input_size: Size of the input features.
             output_size: Size of the output features.
+            hidden_size: Size of the hidden layer. Defaults to input_size.
         """
         super().__init__()
         self.input_size = input_size
         self.output_size = output_size
-        self._inner = nn.Linear(input_size, input_size, True)
-        self._outer = nn.Linear(input_size, output_size, True)
+        self.hidden_size = input_size if hidden_size is None else hidden_size
+        self._inner = nn.Linear(input_size, self.hidden_size, True)
+        self._outer = nn.Linear(self.hidden_size, output_size, True)
 
     def forward(self, input: torch.Tensor):
         """Forward pass through the MLP.

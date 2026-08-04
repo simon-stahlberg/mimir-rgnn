@@ -36,7 +36,11 @@ class PredicateMLPMessages(MessageFunction):
             input_size = relation_arity * hparam_config.embedding_size
             output_size = relation_arity * hparam_config.embedding_size
             if (input_size > 0) and (output_size > 0):
-                self._relation_mlps[relation_name] = MLP(input_size, output_size)
+                self._relation_mlps[relation_name] = MLP(
+                    input_size,
+                    output_size,
+                    hidden_size=hparam_config.message_hidden_size,
+                )
 
     def _forward_relation(self, relation_name: str, argument_embeddings: torch.Tensor) -> torch.Tensor:
         """Compute messages for a specific relation using its dedicated MLP.

@@ -189,6 +189,7 @@ def test_save_and_load():
         domain=domain,
         num_layers=2,
         embedding_size=4,
+        message_hidden_size=3,
         global_readout=True,
         normalize_updates=False
     )
@@ -209,6 +210,7 @@ def test_save_and_load():
     # Check that the loaded file matches the saved one, and that the extras are identical.
     # Note: We can't directly compare configs because encoder objects have different identities after serialization
     assert model_1._hparam_config.embedding_size == model_2._hparam_config.embedding_size
+    assert model_1._hparam_config.message_hidden_size == model_2._hparam_config.message_hidden_size
     assert model_1._hparam_config.num_layers == model_2._hparam_config.num_layers
     assert extras_1 == extras_2
     assert hasattr(model_1, '_input_spec')
@@ -542,6 +544,44 @@ def test_predicate_linear_messages_shape_matches_predicate_messages():
     assert torch.equal(linear_indices, predicate_indices)
 
 
+@pytest.mark.parametrize(("configured_hidden_size", "expected_hidden_size"), [(3, 3), (5, 5)])
+def test_predicate_mlp_messages_uses_configured_hidden_size(
+    configured_hidden_size: int | None,
+    expected_hidden_size: int,
+):
+    domain_path = DATA_DIR / 'blocks' / 'domain.pddl'
+    domain = mm.Domain(domain_path)
+    hparam_config = HyperparameterConfig(
+        domain=domain,
+        embedding_size=3,
+        message_hidden_size=configured_hidden_size,
+    )
+    input_spec = (StateEncoder(), GoalEncoder())
+    predicate_messages = PredicateMLPMessages(hparam_config, input_spec)
+    relation_name, relation_module = next(
+        (name, cast(MLP, module))
+        for name, module in predicate_messages._relation_mlps.items()
+        if cast(MLP, module).input_size > hparam_config.embedding_size
+    )
+    arity = relation_module.input_size // hparam_config.embedding_size
+    argument_indices = torch.arange(arity, dtype=torch.long)
+    node_embeddings = torch.randn(arity, hparam_config.embedding_size)
+
+    output_messages, output_indices = predicate_messages(
+        node_embeddings,
+        {relation_name: argument_indices},
+    )
+
+    assert hparam_config.message_hidden_size == expected_hidden_size
+    assert relation_module.hidden_size == expected_hidden_size
+    assert relation_module._inner.in_features == arity * hparam_config.embedding_size
+    assert relation_module._inner.out_features == expected_hidden_size
+    assert relation_module._outer.in_features == expected_hidden_size
+    assert relation_module._outer.out_features == arity * hparam_config.embedding_size
+    assert output_messages.shape == (arity, hparam_config.embedding_size)
+    assert torch.equal(output_indices, argument_indices)
+
+
 def test_predicate_linear_messages_has_no_argument_residual():
     domain_path = DATA_DIR / 'blocks' / 'domain.pddl'
     domain = mm.Domain(domain_path)
@@ -605,6 +645,25 @@ def test_linear_updates_matches_underlying_linear_layer():
     expected = linear_updates._update(torch.cat((aggregated_messages, node_embeddings), 1))
 
     assert torch.allclose(output, expected)
+
+
+@pytest.mark.parametrize(("hidden_size", "expected_hidden_size"), [(None, 5), (2, 2)])
+def test_mlp_hidden_size(hidden_size: int | None, expected_hidden_size: int):
+    mlp = (
+        MLP(input_size=5, output_size=3)
+        if hidden_size is None
+        else MLP(input_size=5, output_size=3, hidden_size=hidden_size)
+    )
+    output = mlp(torch.randn(4, 5))
+
+    assert mlp.input_size == 5
+    assert mlp.hidden_size == expected_hidden_size
+    assert mlp.output_size == 3
+    assert mlp._inner.in_features == 5
+    assert mlp._inner.out_features == expected_hidden_size
+    assert mlp._outer.in_features == expected_hidden_size
+    assert mlp._outer.out_features == 3
+    assert output.shape == (4, 3)
 
 
 def test_sparse_mlp_eval_mask_has_topk_active_inputs():
@@ -956,3 +1015,7 @@ def test_invalid_hparam_combinations():
         HyperparameterConfig(domain=domain, channelwise_normalization=True, normalize_updates=False)
     with pytest.raises(ValueError):
         HyperparameterConfig(domain=domain, residual_updates=True, binarize_updates=True)
+    with pytest.raises(ValueError):
+        HyperparameterConfig(domain=domain, message_hidden_size=0)
+    with pytest.raises(ValueError):
+        HyperparameterConfig(domain=domain, message_hidden_size=-1)

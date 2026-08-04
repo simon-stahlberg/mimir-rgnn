@@ -17,6 +17,7 @@ class HyperparameterConfig:
     Attributes:
         domain: The PDDL domain for the planning problem.
         embedding_size: The size of the node embeddings.
+        message_hidden_size: The hidden size of predicate-message MLPs. Optional.
         num_layers: The number of message passing layers.
         normalize_updates: Whether to apply normalization to embedding updates.
         channelwise_normalization: Whether to use a per-channel learnable affine
@@ -44,6 +45,11 @@ class HyperparameterConfig:
     embedding_size: int = field(
         default=32,
         metadata={'doc': 'The size of the node embeddings.'}
+    )
+
+    message_hidden_size: int | None = field(
+        default=None,
+        metadata={'doc': 'The hidden size of predicate-message MLPs.'}
     )
 
     num_layers: int = field(
@@ -90,6 +96,8 @@ class HyperparameterConfig:
     )
 
     def __post_init__(self) -> None:
+        if self.message_hidden_size is not None and self.message_hidden_size <= 0:
+            raise ValueError('message_hidden_size must be positive.')
         if self.or_residual_updates and not self.binarize_updates:
             raise ValueError('or_residual_updates requires binarize_updates: '
                              'an elementwise OR is only meaningful on binary embeddings.')
