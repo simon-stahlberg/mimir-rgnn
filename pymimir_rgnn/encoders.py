@@ -1,10 +1,43 @@
 import pymimir as mm
 import torch
 
+from array import array
 from typing import Any
+from weakref import WeakKeyDictionary
 
 from .bases import Encoder, EncodedLists, EncodedTensors, EncodingContext
 from .utils import get_action_name, get_atom_name, get_effect_name, get_effect_relation_name, get_predicate_name, relations_to_tensors
+
+
+# Static atoms are immutable for a problem, but ``State.get_atoms()`` materializes
+# their Python wrappers on every call.  Keep their already-grouped, problem-local
+# object IDs in compact 32-bit arrays outside encoder/model instances so model
+# serialization never retains parsed planning problems.  Weak keys also let
+# entries disappear as soon as the corresponding problem is no longer used.
+_StaticRelationGroups = tuple[tuple[str, array], ...]
+_STATE_STATIC_RELATION_CACHE: WeakKeyDictionary[mm.Problem, _StaticRelationGroups] = WeakKeyDictionary()
+
+
+def _cache_static_relation_groups(
+    problem: mm.Problem,
+    static_atoms: list[mm.GroundAtom],
+    context: EncodingContext,
+) -> _StaticRelationGroups:
+    """Group and cache materialized static atoms using problem-local node IDs."""
+    grouped_ids: dict[str, array] = {}
+    for atom in static_atoms:
+        predicate_name = atom.get_predicate().get_name()
+        if predicate_name not in grouped_ids:
+            # Keep a key even for true nullary predicates, whose ID list is empty.
+            grouped_ids[predicate_name] = array("i")
+        grouped_ids[predicate_name].extend(
+            context.get_object_id(obj.get_index()) - context.id_offset
+            for obj in atom.get_terms()
+        )
+
+    cached_groups = tuple(grouped_ids.items())
+    _STATE_STATIC_RELATION_CACHE[problem] = cached_groups
+    return cached_groups
 
 
 class StateEncoder(Encoder):
@@ -41,8 +74,57 @@ class StateEncoder(Encoder):
     def encode(self, input_value: Any, state: mm.State, encoding: 'EncodedLists', context: 'EncodingContext') -> None:
         assert isinstance(input_value, mm.State), f'StateEncoder expected a State, got {type(input_value)}'
 
-        # Add atom relations for all atoms in the state
-        for atom in input_value.get_atoms():
+        # State subclasses outside Pymimir may intentionally implement only the
+        # original no-argument get_atoms() protocol.  In that case preserve the
+        # uncached encoding behavior instead of assuming that their Problem
+        # subclass supports Pymimir's static/fluent partitioning API.
+        try:
+            dynamic_atoms = input_value.get_atoms(ignore_static=True)
+        except TypeError:
+            for atom in input_value.get_atoms():
+                relation_name = get_atom_name(atom, state, False, self.suffix)
+                object_indices = [context.get_object_id(obj.get_index()) for obj in atom.get_terms()]
+                if relation_name not in encoding.flattened_relations:
+                    encoding.flattened_relations[relation_name] = object_indices
+                else:
+                    encoding.flattened_relations[relation_name].extend(object_indices)
+            return
+
+        static_relation_groups = _STATE_STATIC_RELATION_CACHE.get(input_value.get_problem())
+        if static_relation_groups is None:
+            try:
+                static_atoms = input_value.get_atoms(
+                    ignore_fluent=True,
+                    ignore_derived=True,
+                )
+            except TypeError:
+                for atom in input_value.get_atoms():
+                    relation_name = get_atom_name(atom, state, False, self.suffix)
+                    object_indices = [context.get_object_id(obj.get_index()) for obj in atom.get_terms()]
+                    if relation_name not in encoding.flattened_relations:
+                        encoding.flattened_relations[relation_name] = object_indices
+                    else:
+                        encoding.flattened_relations[relation_name].extend(object_indices)
+                return
+            static_relation_groups = _cache_static_relation_groups(
+                input_value.get_problem(),
+                static_atoms,
+                context,
+            )
+
+        # Static atoms are the same in every state of a problem.  Add their
+        # cached problem-local IDs at this instance's global node offset.
+        for predicate_name, local_object_ids in static_relation_groups:
+            relation_name = f'relation_{predicate_name}{self.suffix}'
+            object_indices = [local_id + context.id_offset for local_id in local_object_ids]
+            if relation_name not in encoding.flattened_relations:
+                encoding.flattened_relations[relation_name] = object_indices
+            else:
+                encoding.flattened_relations[relation_name].extend(object_indices)
+
+        # Fluent and derived atoms can vary from state to state and must still
+        # be materialized on every encoding.
+        for atom in dynamic_atoms:
             relation_name = get_atom_name(atom, state, False, self.suffix)
             object_indices: list[int] = [context.get_object_id(obj.get_index()) for obj in atom.get_terms()]
             if relation_name not in encoding.flattened_relations:
