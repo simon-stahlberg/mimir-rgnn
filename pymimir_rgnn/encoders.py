@@ -83,11 +83,11 @@ class StateEncoder(Encoder):
         except TypeError:
             for atom in input_value.get_atoms():
                 relation_name = get_atom_name(atom, state, False, self.suffix)
-                object_indices = [context.get_object_id(obj.get_index()) for obj in atom.get_terms()]
+                unfiltered_object_indices = [context.get_object_id(obj.get_index()) for obj in atom.get_terms()]
                 if relation_name not in encoding.flattened_relations:
-                    encoding.flattened_relations[relation_name] = object_indices
+                    encoding.flattened_relations[relation_name] = unfiltered_object_indices
                 else:
-                    encoding.flattened_relations[relation_name].extend(object_indices)
+                    encoding.flattened_relations[relation_name].extend(unfiltered_object_indices)
             return
 
         static_relation_groups = _STATE_STATIC_RELATION_CACHE.get(input_value.get_problem())
@@ -100,11 +100,11 @@ class StateEncoder(Encoder):
             except TypeError:
                 for atom in input_value.get_atoms():
                     relation_name = get_atom_name(atom, state, False, self.suffix)
-                    object_indices = [context.get_object_id(obj.get_index()) for obj in atom.get_terms()]
+                    fallback_object_indices = [context.get_object_id(obj.get_index()) for obj in atom.get_terms()]
                     if relation_name not in encoding.flattened_relations:
-                        encoding.flattened_relations[relation_name] = object_indices
+                        encoding.flattened_relations[relation_name] = fallback_object_indices
                     else:
-                        encoding.flattened_relations[relation_name].extend(object_indices)
+                        encoding.flattened_relations[relation_name].extend(fallback_object_indices)
                 return
             static_relation_groups = _cache_static_relation_groups(
                 input_value.get_problem(),
@@ -116,21 +116,21 @@ class StateEncoder(Encoder):
         # cached problem-local IDs at this instance's global node offset.
         for predicate_name, local_object_ids in static_relation_groups:
             relation_name = f'relation_{predicate_name}{self.suffix}'
-            object_indices = [local_id + context.id_offset for local_id in local_object_ids]
+            offset_object_indices = [local_id + context.id_offset for local_id in local_object_ids]
             if relation_name not in encoding.flattened_relations:
-                encoding.flattened_relations[relation_name] = object_indices
+                encoding.flattened_relations[relation_name] = offset_object_indices
             else:
-                encoding.flattened_relations[relation_name].extend(object_indices)
+                encoding.flattened_relations[relation_name].extend(offset_object_indices)
 
         # Fluent and derived atoms can vary from state to state and must still
         # be materialized on every encoding.
         for atom in dynamic_atoms:
             relation_name = get_atom_name(atom, state, False, self.suffix)
-            object_indices: list[int] = [context.get_object_id(obj.get_index()) for obj in atom.get_terms()]
+            dynamic_object_indices = [context.get_object_id(obj.get_index()) for obj in atom.get_terms()]
             if relation_name not in encoding.flattened_relations:
-                encoding.flattened_relations[relation_name] = object_indices
+                encoding.flattened_relations[relation_name] = dynamic_object_indices
             else:
-                encoding.flattened_relations[relation_name].extend(object_indices)
+                encoding.flattened_relations[relation_name].extend(dynamic_object_indices)
 
 
 class GoalEncoder(Encoder):
