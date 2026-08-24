@@ -23,7 +23,7 @@ DATA_DIR = TEST_DIR / 'data'
 ])
 def test_create_model(dom: str, agg: AggregationFunction, layers: int, size: int, gro: bool, norm: bool):
     domain_path = DATA_DIR / dom / 'domain.pddl'
-    domain = mm.Domain(domain_path)
+    domain = mm.Domain.from_file(domain_path)
     hparam_config = HyperparameterConfig(
         domain=domain,
         num_layers=layers,
@@ -55,8 +55,8 @@ def test_create_model(dom: str, agg: AggregationFunction, layers: int, size: int
 def test_forward_model(dom: str, agg: AggregationFunction, layers: int, size: int, gro: bool, norm: bool):
     domain_path = DATA_DIR / dom / 'domain.pddl'
     problem_path = DATA_DIR / dom / 'problem.pddl'
-    domain = mm.Domain(domain_path)
-    problem = mm.Problem(domain, problem_path)
+    domain = mm.Domain.from_file(domain_path)
+    problem = mm.Problem.from_file(domain, problem_path)
     hparam_config = HyperparameterConfig(
         domain=domain,
         num_layers=layers,
@@ -72,9 +72,9 @@ def test_forward_model(dom: str, agg: AggregationFunction, layers: int, size: in
         update_function=MLPUpdates(hparam_config)
     )
     model = RelationalGraphNeuralNetwork(hparam_config, module_config, input_spec, output_spec)  # type: ignore
-    initial_state = problem.get_initial_state()
-    initial_actions = initial_state.generate_applicable_actions()
-    original_goal = problem.get_goal_condition()
+    initial_state = problem.initial_state
+    initial_actions = initial_state.applicable_actions()
+    original_goal = problem.goal
     input = [(initial_state, initial_actions, original_goal)]
     output = model.forward(input)
     q_values = output.readout('q_values')
@@ -91,8 +91,8 @@ def test_forward_model(dom: str, agg: AggregationFunction, layers: int, size: in
 def test_forward_hook(domain_name: str):
     domain_path = DATA_DIR / domain_name / 'domain.pddl'
     problem_path = DATA_DIR / domain_name / 'problem.pddl'
-    domain = mm.Domain(domain_path)
-    problem = mm.Problem(domain, problem_path)
+    domain = mm.Domain.from_file(domain_path)
+    problem = mm.Problem.from_file(domain, problem_path)
     hparam_config = HyperparameterConfig(
         domain=domain,
         num_layers=4,
@@ -106,8 +106,8 @@ def test_forward_hook(domain_name: str):
         update_function=MLPUpdates(hparam_config)
     )
     model = RelationalGraphNeuralNetwork(hparam_config, module_config, input_spec, output_spec)  # type: ignore
-    initial_state = problem.get_initial_state()
-    original_goal = problem.get_goal_condition()
+    initial_state = problem.initial_state
+    original_goal = problem.goal
     input = [(initial_state, original_goal)]
     hook_output: list[tuple[int, torch.Tensor]] = []
     def hook_function(x: ForwardState):
@@ -128,8 +128,8 @@ def test_forward_hook(domain_name: str):
 def test_forward_identical_batch(domain_name: str):
     domain_path = DATA_DIR / domain_name / 'domain.pddl'
     problem_path = DATA_DIR / domain_name / 'problem.pddl'
-    domain = mm.Domain(domain_path)
-    problem = mm.Problem(domain, problem_path)
+    domain = mm.Domain.from_file(domain_path)
+    problem = mm.Problem.from_file(domain, problem_path)
     hparam_config = HyperparameterConfig(
         domain=domain,
         num_layers=4,
@@ -143,8 +143,8 @@ def test_forward_identical_batch(domain_name: str):
         update_function=MLPUpdates(hparam_config)
     )
     model = RelationalGraphNeuralNetwork(hparam_config, module_config, input_spec, output_spec)  # type: ignore
-    initial_state = problem.get_initial_state()
-    original_goal = problem.get_goal_condition()
+    initial_state = problem.initial_state
+    original_goal = problem.goal
     batch_size = 4
     input = [(initial_state, original_goal)] * batch_size
     output = model.forward(input)
@@ -157,8 +157,8 @@ def test_forward_identical_batch(domain_name: str):
 def test_forward_different_batch(domain_name: str):
     domain_path = DATA_DIR / domain_name / 'domain.pddl'
     problem_path = DATA_DIR / domain_name / 'problem.pddl'
-    domain = mm.Domain(domain_path)
-    problem = mm.Problem(domain, problem_path)
+    domain = mm.Domain.from_file(domain_path)
+    problem = mm.Problem.from_file(domain, problem_path)
     hparam_config = HyperparameterConfig(
         domain=domain,
         num_layers=4,
@@ -172,9 +172,9 @@ def test_forward_different_batch(domain_name: str):
         update_function=MLPUpdates(hparam_config)
     )
     model = RelationalGraphNeuralNetwork(hparam_config, module_config, input_spec, output_spec)  # type: ignore
-    initial_state = problem.get_initial_state()
-    original_goal = problem.get_goal_condition()
-    different_goals = [mm.GroundConjunctiveCondition.new([literal], problem) for literal in original_goal]
+    initial_state = problem.initial_state
+    original_goal = problem.goal
+    different_goals = [problem.ground_condition(literal) for literal in original_goal]
     input = [(initial_state, different_goal) for different_goal in different_goals]
     output = model.forward(input)
     readout = output.readout('value')
@@ -183,7 +183,7 @@ def test_forward_different_batch(domain_name: str):
 
 def test_save_and_load():
     domain_path = DATA_DIR / 'blocks' / 'domain.pddl'
-    domain = mm.Domain(domain_path)
+    domain = mm.Domain.from_file(domain_path)
     # Create a model.
     hparam_config_1 = HyperparameterConfig(
         domain=domain,
@@ -229,8 +229,8 @@ def test_simple_forward(domain_name: str):
     """Test basic functionality of the new encoder-based API."""
     domain_path = DATA_DIR / domain_name / 'domain.pddl'
     problem_path = DATA_DIR / domain_name / 'problem.pddl'
-    domain = mm.Domain(domain_path)
-    problem = mm.Problem(domain, problem_path)
+    domain = mm.Domain.from_file(domain_path)
+    problem = mm.Problem.from_file(domain, problem_path)
 
     # Test new encoder-based API
     embedding_size = 4
@@ -250,9 +250,9 @@ def test_simple_forward(domain_name: str):
     model = RelationalGraphNeuralNetwork(hparam_config, module_config, input_spec, output_spec)  # type: ignore
 
     # Test forward pass
-    initial_state = problem.get_initial_state()
-    goal_condition = problem.get_goal_condition()
-    ground_actions = initial_state.generate_applicable_actions()
+    initial_state = problem.initial_state
+    goal_condition = problem.goal
+    ground_actions = initial_state.applicable_actions()
 
     input_data = [(initial_state, ground_actions, goal_condition)]
     result = model.forward(input_data)
@@ -273,7 +273,7 @@ def test_simple_forward(domain_name: str):
 def test_decoder_constructors():
     """Test all different decoders construct properly."""
     domain_path = DATA_DIR / 'blocks' / 'domain.pddl'
-    domain = mm.Domain(domain_path)
+    domain = mm.Domain.from_file(domain_path)
     embedding_size = 4
 
     # Test ActionScalarDecoder
@@ -342,8 +342,8 @@ def test_attention_messages(domain_name: str):
     """Test that AttentionMessages class does not crash and produces reasonable output."""
     domain_path = DATA_DIR / domain_name / 'domain.pddl'
     problem_path = DATA_DIR / domain_name / 'problem.pddl'
-    domain = mm.Domain(domain_path)
-    problem = mm.Problem(domain, problem_path)
+    domain = mm.Domain.from_file(domain_path)
+    problem = mm.Problem.from_file(domain, problem_path)
 
     hparam_config = HyperparameterConfig(
         domain=domain,
@@ -362,9 +362,9 @@ def test_attention_messages(domain_name: str):
     model = RelationalGraphNeuralNetwork(hparam_config, module_config, input_spec, output_spec)  # type: ignore
 
     # Test forward pass
-    initial_state = problem.get_initial_state()
-    goal_condition = problem.get_goal_condition()
-    ground_actions = initial_state.generate_applicable_actions()
+    initial_state = problem.initial_state
+    goal_condition = problem.goal
+    ground_actions = initial_state.applicable_actions()
 
     input_data = [(initial_state, ground_actions, goal_condition)]
     result = model.forward(input_data)
@@ -385,8 +385,8 @@ def test_curry_forward(domain_name: str):
     """Test that curry_forward is equivalent to forward but allows separated computation."""
     domain_path = DATA_DIR / domain_name / 'domain.pddl'
     problem_path = DATA_DIR / domain_name / 'problem.pddl'
-    domain = mm.Domain(domain_path)
-    problem = mm.Problem(domain, problem_path)
+    domain = mm.Domain.from_file(domain_path)
+    problem = mm.Problem.from_file(domain, problem_path)
 
     # Setup model
     hparam_config = HyperparameterConfig(
@@ -404,9 +404,9 @@ def test_curry_forward(domain_name: str):
     model = RelationalGraphNeuralNetwork(hparam_config, module_config, input_spec, output_spec)  # type: ignore
 
     # Prepare input data
-    initial_state = problem.get_initial_state()
-    goal_condition = problem.get_goal_condition()
-    ground_actions = initial_state.generate_applicable_actions()
+    initial_state = problem.initial_state
+    goal_condition = problem.goal
+    ground_actions = initial_state.applicable_actions()
     input_data = [(initial_state, ground_actions, goal_condition)]
 
     # Test 1: Verify curry_forward returns a callable
@@ -450,8 +450,8 @@ def test_curry_forward(domain_name: str):
 def test_expressive_encoders(domain_name: str):
     domain_path = DATA_DIR / domain_name / 'domain.pddl'
     problem_path = DATA_DIR / domain_name / 'problem.pddl'
-    domain = mm.Domain(domain_path)
-    problem = mm.Problem(domain, problem_path)
+    domain = mm.Domain.from_file(domain_path)
+    problem = mm.Problem.from_file(domain, problem_path)
     hparam_config = HyperparameterConfig(
         domain=domain,
         num_layers=4,
@@ -466,7 +466,7 @@ def test_expressive_encoders(domain_name: str):
     )
     model = RelationalGraphNeuralNetwork(hparam_config, module_config, input_spec, output_spec)  # type: ignore
     assert model is not None
-    input = [(problem.get_initial_state(), problem.get_goal_condition())]
+    input = [(problem.initial_state, problem.goal)]
     output = model.forward(input)
     value = output.readout('value')
     assert isinstance(value, torch.Tensor)
@@ -477,8 +477,8 @@ def test_expressive_encoders(domain_name: str):
 def test_predicate_linear_messages_forward_model():
     domain_path = DATA_DIR / 'blocks' / 'domain.pddl'
     problem_path = DATA_DIR / 'blocks' / 'problem.pddl'
-    domain = mm.Domain(domain_path)
-    problem = mm.Problem(domain, problem_path)
+    domain = mm.Domain.from_file(domain_path)
+    problem = mm.Problem.from_file(domain, problem_path)
     hparam_config = HyperparameterConfig(
         domain=domain,
         num_layers=2,
@@ -492,7 +492,7 @@ def test_predicate_linear_messages_forward_model():
         update_function=MLPUpdates(hparam_config)
     )
     model = RelationalGraphNeuralNetwork(hparam_config, module_config, input_spec, output_spec)  # type: ignore
-    output = model.forward([(problem.get_initial_state(), problem.get_goal_condition())])
+    output = model.forward([(problem.initial_state, problem.goal)])
     value = output.readout('value')
     assert isinstance(value, torch.Tensor)
     assert value.shape == (1,)
@@ -502,8 +502,8 @@ def test_predicate_linear_messages_forward_model():
 def test_linear_updates_forward_model():
     domain_path = DATA_DIR / 'blocks' / 'domain.pddl'
     problem_path = DATA_DIR / 'blocks' / 'problem.pddl'
-    domain = mm.Domain(domain_path)
-    problem = mm.Problem(domain, problem_path)
+    domain = mm.Domain.from_file(domain_path)
+    problem = mm.Problem.from_file(domain, problem_path)
     hparam_config = HyperparameterConfig(
         domain=domain,
         num_layers=2,
@@ -517,7 +517,7 @@ def test_linear_updates_forward_model():
         update_function=LinearUpdates(hparam_config)
     )
     model = RelationalGraphNeuralNetwork(hparam_config, module_config, input_spec, output_spec)  # type: ignore
-    output = model.forward([(problem.get_initial_state(), problem.get_goal_condition())])
+    output = model.forward([(problem.initial_state, problem.goal)])
     value = output.readout('value')
     assert isinstance(value, torch.Tensor)
     assert value.shape == (1,)
@@ -526,7 +526,7 @@ def test_linear_updates_forward_model():
 
 def test_predicate_linear_messages_shape_matches_predicate_messages():
     domain_path = DATA_DIR / 'blocks' / 'domain.pddl'
-    domain = mm.Domain(domain_path)
+    domain = mm.Domain.from_file(domain_path)
     hparam_config = HyperparameterConfig(domain=domain, embedding_size=3)
     input_spec = (StateEncoder(), GoalEncoder())
     linear_messages = PredicateLinearMessages(hparam_config, input_spec)
@@ -550,7 +550,7 @@ def test_predicate_mlp_messages_uses_configured_hidden_size(
     expected_hidden_size: int,
 ):
     domain_path = DATA_DIR / 'blocks' / 'domain.pddl'
-    domain = mm.Domain(domain_path)
+    domain = mm.Domain.from_file(domain_path)
     hparam_config = HyperparameterConfig(
         domain=domain,
         embedding_size=3,
@@ -584,7 +584,7 @@ def test_predicate_mlp_messages_uses_configured_hidden_size(
 
 def test_predicate_linear_messages_has_no_argument_residual():
     domain_path = DATA_DIR / 'blocks' / 'domain.pddl'
-    domain = mm.Domain(domain_path)
+    domain = mm.Domain.from_file(domain_path)
     hparam_config = HyperparameterConfig(domain=domain, embedding_size=3)
     input_spec = (StateEncoder(), GoalEncoder())
     linear_messages = PredicateLinearMessages(hparam_config, input_spec)
@@ -607,7 +607,7 @@ def test_predicate_linear_messages_has_no_argument_residual():
 
 def test_predicate_linear_messages_ternarizes_and_records_quantization():
     domain_path = DATA_DIR / 'blocks' / 'domain.pddl'
-    domain = mm.Domain(domain_path)
+    domain = mm.Domain.from_file(domain_path)
     hparam_config = HyperparameterConfig(
         domain=domain,
         embedding_size=3,
@@ -635,7 +635,7 @@ def test_predicate_linear_messages_ternarizes_and_records_quantization():
 
 def test_linear_updates_matches_underlying_linear_layer():
     domain_path = DATA_DIR / 'blocks' / 'domain.pddl'
-    domain = mm.Domain(domain_path)
+    domain = mm.Domain.from_file(domain_path)
     hparam_config = HyperparameterConfig(domain=domain, embedding_size=3)
     linear_updates = LinearUpdates(hparam_config)
     node_embeddings = torch.randn(5, hparam_config.embedding_size)
@@ -771,7 +771,7 @@ def test_sparse_mlp_topk_margin_penalty_rejects_negative_margin():
 
 def test_sparse_mlp_messages_shape_and_no_residual_bypass():
     domain_path = DATA_DIR / 'blocks' / 'domain.pddl'
-    domain = mm.Domain(domain_path)
+    domain = mm.Domain.from_file(domain_path)
     hparam_config = HyperparameterConfig(
         domain=domain,
         embedding_size=3,
@@ -796,7 +796,7 @@ def test_sparse_mlp_messages_shape_and_no_residual_bypass():
 
 def test_sparse_mlp_messages_rejects_removed_linear_argument():
     domain_path = DATA_DIR / 'blocks' / 'domain.pddl'
-    domain = mm.Domain(domain_path)
+    domain = mm.Domain.from_file(domain_path)
     hparam_config = HyperparameterConfig(domain=domain)
     input_spec = (StateEncoder(), GoalEncoder())
     with pytest.raises(TypeError):
@@ -805,7 +805,7 @@ def test_sparse_mlp_messages_rejects_removed_linear_argument():
 
 def test_sparse_mlp_messages_topk_margin_penalty_averages_relations():
     domain_path = DATA_DIR / 'blocks' / 'domain.pddl'
-    domain = mm.Domain(domain_path)
+    domain = mm.Domain.from_file(domain_path)
     hparam_config = HyperparameterConfig(domain=domain, embedding_size=2)
     input_spec = (StateEncoder(), GoalEncoder())
     sparse_messages = SparseMLPMessages(hparam_config, input_spec, k=1, gate_mode="deterministic_topk")
@@ -825,7 +825,7 @@ def test_sparse_mlp_messages_topk_margin_penalty_averages_relations():
 
 def test_sparse_mlp_messages_topk_margin_penalty_empty_module_is_zero():
     domain_path = DATA_DIR / 'blocks' / 'domain.pddl'
-    domain = mm.Domain(domain_path)
+    domain = mm.Domain.from_file(domain_path)
     hparam_config = HyperparameterConfig(domain=domain, embedding_size=2)
     sparse_messages = SparseMLPMessages(hparam_config, input_spec=(), k=1)
     penalty = sparse_messages.topk_margin_penalty(margin=1.0)
@@ -835,7 +835,7 @@ def test_sparse_mlp_messages_topk_margin_penalty_empty_module_is_zero():
 
 def test_sparse_mlp_updates_topk_margin_penalty_delegates_to_update_network():
     domain_path = DATA_DIR / 'blocks' / 'domain.pddl'
-    domain = mm.Domain(domain_path)
+    domain = mm.Domain.from_file(domain_path)
     hparam_config = HyperparameterConfig(domain=domain, embedding_size=2)
     sparse_updates = SparseMLPUpdates(hparam_config, k=1, gate_mode="deterministic_topk")
     with torch.no_grad():
@@ -875,10 +875,10 @@ def _make_decodable_model(domain: mm.Domain) -> RelationalGraphNeuralNetwork:
 def test_decodable_configuration(domain_name: str):
     domain_path = DATA_DIR / domain_name / 'domain.pddl'
     problem_path = DATA_DIR / domain_name / 'problem.pddl'
-    domain = mm.Domain(domain_path)
-    problem = mm.Problem(domain, problem_path)
+    domain = mm.Domain.from_file(domain_path)
+    problem = mm.Problem.from_file(domain, problem_path)
     model = _make_decodable_model(domain)
-    input = [(problem.get_initial_state(), problem.get_goal_condition())]
+    input = [(problem.initial_state, problem.goal)]
     output = model.forward(input)
     value = output.readout('value')
     assert isinstance(value, torch.Tensor)
@@ -894,10 +894,10 @@ def test_decodable_configuration(domain_name: str):
 def test_decodable_configuration_deterministic(domain_name: str):
     domain_path = DATA_DIR / domain_name / 'domain.pddl'
     problem_path = DATA_DIR / domain_name / 'problem.pddl'
-    domain = mm.Domain(domain_path)
-    problem = mm.Problem(domain, problem_path)
+    domain = mm.Domain.from_file(domain_path)
+    problem = mm.Problem.from_file(domain, problem_path)
     model = _make_decodable_model(domain)
-    input = [(problem.get_initial_state(), problem.get_goal_condition())]
+    input = [(problem.initial_state, problem.goal)]
     embeddings_1 = model.forward(input).readout('embeddings')
     embeddings_2 = model.forward(input).readout('embeddings')
     for instance_embeddings_1, instance_embeddings_2 in zip(embeddings_1, embeddings_2):
@@ -907,8 +907,8 @@ def test_decodable_configuration_deterministic(domain_name: str):
 def test_quantization_records_on_decodable_configuration():
     domain_path = DATA_DIR / 'blocks' / 'domain.pddl'
     problem_path = DATA_DIR / 'blocks' / 'problem.pddl'
-    domain = mm.Domain(domain_path)
-    problem = mm.Problem(domain, problem_path)
+    domain = mm.Domain.from_file(domain_path)
+    problem = mm.Problem.from_file(domain, problem_path)
     model = _make_decodable_model(domain)
     assert model.quantization_records() == ()
 
@@ -920,7 +920,7 @@ def test_quantization_records_on_decodable_configuration():
         hook_records.append(records)
     model.add_hook(hook_function)
 
-    input = [(problem.get_initial_state(), problem.get_goal_condition())]
+    input = [(problem.initial_state, problem.goal)]
     output = model.forward(input)
     final_records = output.quantization_records()
     model_records = model.quantization_records()
@@ -945,8 +945,8 @@ def test_quantization_records_on_decodable_configuration():
 def test_quantization_records_empty_without_quantization():
     domain_path = DATA_DIR / 'blocks' / 'domain.pddl'
     problem_path = DATA_DIR / 'blocks' / 'problem.pddl'
-    domain = mm.Domain(domain_path)
-    problem = mm.Problem(domain, problem_path)
+    domain = mm.Domain.from_file(domain_path)
+    problem = mm.Problem.from_file(domain, problem_path)
     hparam_config = HyperparameterConfig(
         domain=domain,
         num_layers=2,
@@ -962,7 +962,7 @@ def test_quantization_records_empty_without_quantization():
         update_function=MLPUpdates(hparam_config)
     )
     model = RelationalGraphNeuralNetwork(hparam_config, module_config, input_spec, output_spec)  # type: ignore
-    input = [(problem.get_initial_state(), problem.get_goal_condition())]
+    input = [(problem.initial_state, problem.goal)]
     output = model.forward(input)
     assert output.quantization_records() == ()
     assert model.quantization_records() == ()
@@ -1006,7 +1006,7 @@ def test_boundary_margin_penalty():
 
 def test_invalid_hparam_combinations():
     domain_path = DATA_DIR / 'blocks' / 'domain.pddl'
-    domain = mm.Domain(domain_path)
+    domain = mm.Domain.from_file(domain_path)
     with pytest.raises(ValueError):
         HyperparameterConfig(domain=domain, or_residual_updates=True, residual_updates=False, binarize_updates=False)
     with pytest.raises(ValueError):

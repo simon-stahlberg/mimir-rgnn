@@ -24,7 +24,7 @@ Example:
     >>> import pymimir_rgnn as rgnn
     >>>
     >>> # Load PDDL domain
-    >>> domain = mm.Domain('path/to/domain.pddl')
+    >>> domain = mm.Domain.from_file('path/to/domain.pddl')
     >>>
     >>> # Configure the R-GNN
     >>> hparam_config = rgnn.HyperparameterConfig(
@@ -33,16 +33,16 @@ Example:
     ...     num_layers=30,
     ... )
     >>>
+    >>> # Define input/output specifications
+    >>> input_spec = (rgnn.StateEncoder(), rgnn.GoalEncoder())
+    >>> output_spec = [('value', rgnn.ObjectsScalarDecoder(hparam_config))]
+    >>>
     >>> # Configure modules
     >>> module_config = rgnn.ModuleConfig(
     ...     aggregation_function=rgnn.MeanAggregation(),
     ...     message_function=rgnn.PredicateMLPMessages(hparam_config, input_spec),
     ...     update_function=rgnn.MLPUpdates(hparam_config)
     ... )
-    >>>
-    >>> # Define input/output specifications
-    >>> input_spec = (rgnn.StateEncoder(), rgnn.GoalEncoder())
-    >>> output_spec = [('q_values', rgnn.ActionScalarDecoder(hparam_config))]
     >>>
     >>> # Create model
     >>> model = rgnn.RelationalGraphNeuralNetwork(

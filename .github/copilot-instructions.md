@@ -12,7 +12,7 @@
 
 1. **Use virtual environment**:
    ```bash
-   source .uv-3-10/bin/activate
+   source .venv/bin/activate
    ```
 
 2. **Run tests** - takes ~3 seconds:
@@ -242,16 +242,17 @@ assert len(input_specification) == len(set(input_specification)), \
 
 ### PDDL Integration Patterns
 ```python
-# States contain atoms (ground literals that are true)
-state = mm.State(...)
-atoms = state.get_atoms()
+# Load a problem and access its initial state
+problem = mm.Problem.from_files("domain.pddl", "problem.pddl")
+state = problem.initial_state
+atoms = state.atoms
 
 # Goals are conjunctive conditions
-goal = mm.GroundConjunctiveCondition(...)
+goal = problem.goal
 
-# Actions have parameters and can be grounded
-action = mm.GroundAction(...)
-objects = action.get_objects()
+# Applicable ground actions expose their object arguments
+action = state.applicable_actions()[0]
+objects = action.objects
 ```
 
 ### Graph Neural Network Concepts
@@ -303,7 +304,7 @@ tensor2 = torch.tensor(other_data, device=device)
 **Core Dependencies**:
 - **Python**: 3.11+ (required for type system features)
 - **PyTorch**: 2.6.0+ (core ML framework)
-- **Mimir**: 0.13.42+ (PDDL planning library)
+- **Pymimir**: 0.14.0b2 (PDDL planning library)
 
 **Development Dependencies**:
 - **pytest**: Testing framework
@@ -377,8 +378,8 @@ def complex_function(param1: str, param2: int) -> Dict[str, Any]:
 
 ## Version Information
 
-- **Current**: 0.1.3 (pre-1.0, API may change)
-- **Semantic versioning**: MAJOR.MINOR.PATCH
+- **Version source**: `project.version` in `pyproject.toml`
+- **Semantic versioning**: MAJOR.MINOR.PATCH with PEP 440 prereleases
 - **License**: GPL-3.0-or-later
 
 This document should guide all development decisions and ensure consistency across the codebase. When in doubt, follow existing patterns and prioritize type safety and clear documentation.

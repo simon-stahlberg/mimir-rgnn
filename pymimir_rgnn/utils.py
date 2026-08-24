@@ -1,7 +1,7 @@
-import pymimir as mm
 import torch
 
 from collections.abc import Iterable
+import pymimir as mm
 
 from .bases import QuantizationRecord
 
@@ -19,9 +19,9 @@ def get_atom_name(atom: mm.GroundAtom, state: mm.State, is_goal_atom: bool, suff
     """
     if is_goal_atom:
         is_in_state = state.contains(atom)
-        return get_predicate_name(atom.get_predicate(), True, is_in_state, suffix)
+        return get_predicate_name(atom.predicate, True, is_in_state, suffix)
     else:
-        return get_predicate_name(atom.get_predicate(), False, True, suffix)
+        return get_predicate_name(atom.predicate, False, True, suffix)
 
 
 def get_predicate_name(predicate: mm.Predicate, is_goal_predicate: bool, is_true: bool, suffix: str) -> str:
@@ -41,9 +41,9 @@ def get_predicate_name(predicate: mm.Predicate, is_goal_predicate: bool, is_true
     assert (not is_goal_predicate and is_true) or (is_goal_predicate)
     if is_goal_predicate:
         truth_value = 'true' if is_true else 'false'
-        return f'relation_{predicate.get_name()}{suffix}_goal_{truth_value}'
+        return f'relation_{predicate.name}{suffix}_goal_{truth_value}'
     else:
-        return f'relation_{predicate.get_name()}{suffix}'
+        return f'relation_{predicate.name}{suffix}'
 
 
 def get_effect_name(predicate: mm.Predicate, positive: bool, affects_goal: bool, suffix: str) -> str:
@@ -57,7 +57,7 @@ def get_effect_name(predicate: mm.Predicate, positive: bool, affects_goal: bool,
     Returns:
         String name for the effect relation.
     """
-    return predicate.get_name() + suffix + ('_pos' if positive else '_neg') + ('_goal' if affects_goal else '')
+    return predicate.name + suffix + ('_pos' if positive else '_neg') + ('_goal' if affects_goal else '')
 
 
 def get_effect_relation_name(suffix: str) -> str:
@@ -82,9 +82,9 @@ def get_action_name(action: mm.Action | mm.GroundAction, suffix: str) -> str:
         RuntimeError: If the argument is not a recognized action type.
     """
     if isinstance(action, mm.GroundAction):
-        return 'action_' + str(action.get_action().get_name()) + suffix
-    elif isinstance(action, mm.Action):  # type: ignore
-        return 'action_' + str(action.get_name()) + suffix
+        return 'action_' + action.schema.name + suffix
+    elif isinstance(action, mm.Action):
+        return 'action_' + action.name + suffix
     else:
         raise RuntimeError('Argument is not an action.')
 

@@ -29,7 +29,7 @@ pip install pymimir-rgnn
 
 - Python 3.11+
 - PyTorch 2.6.0+
-- Mimir 0.13.42+
+- Pymimir 0.14.0b2+
 
 ## Quick Start
 
@@ -38,7 +38,7 @@ import pymimir as mm
 import pymimir_rgnn as rgnn
 
 # Load a PDDL domain
-domain = mm.Domain('path/to/domain.pddl')
+domain = mm.Domain.from_file('path/to/domain.pddl')
 
 # Configure the R-GNN hyperparameters
 hparam_config = rgnn.HyperparameterConfig(
@@ -62,15 +62,21 @@ module_config = rgnn.ModuleConfig(
 model = rgnn.RelationalGraphNeuralNetwork(hparam_config, module_config, input_spec, output_spec)
 
 # Use the model for inference
-# problem = mm.Problem(domain, 'path/to/problem.pddl')
-# state = problem.get_initial_state()
-# actions = state.generate_applicable_actions()
-# goal = problem.get_goal_condition()
+# problem = mm.Problem.from_file(domain, 'path/to/problem.pddl')
+# state = problem.initial_state
+# actions = state.applicable_actions()
+# goal = problem.goal
 #
 # inputs = [(state, actions, goal)]  # Input tuple matching input_spec order
 # outputs = model(inputs)
 # q_values = outputs.readout('q_values')
 ```
+
+Pymimir 0.14.0b2 exposes complete derived-state and PDDL type information.
+Mimir-RGNN encodes those features directly from the public interface. Numeric
+PDDL remains intentionally unsupported. See [the migration decision
+log](https://github.com/simon-stahlberg/mimir-rgnn/blob/master/PYMIMIR_0_14_MIGRATION.md)
+for the interface contract and graph-schema changes.
 
 ## API Overview
 

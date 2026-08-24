@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pymimir-rgnn"
-version = "0.2.10"
+version = "0.3.0b1"
 description = "Relational Graph Neural Network (R-GNN) package for Mimir based on PyTorch."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -13,7 +13,7 @@ authors = [
   { name = "Simon Stahlberg", email = "simon.stahlberg@gmail.com" }
 ]
 classifiers = [
-  "Development Status :: 3 - Alpha",
+  "Development Status :: 4 - Beta",
   "Intended Audience :: Developers",
   "Intended Audience :: Science/Research",
   "Programming Language :: Python :: 3",
@@ -24,7 +24,7 @@ classifiers = [
 ]
 dependencies = [
   "torch>=2.6.0",
-  "pymimir>=0.13.42"
+  "pymimir==0.14.0b2"
 ]
 
 [project.urls]

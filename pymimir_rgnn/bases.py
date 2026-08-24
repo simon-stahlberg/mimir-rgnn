@@ -66,18 +66,21 @@ class EncodingContext():
         self.problem = problem
         self.id_offset = id_offset
 
-        # Map from object indices to global node IDs
-        objects = problem.get_objects() + problem.get_domain().get_constants()
-        self.object_index_to_id: dict[int, int] = { obj.get_index(): i + id_offset for i, obj in enumerate(objects) }
+        # Pymimir exposes one canonical object order for the complete problem:
+        # domain constants first, followed by problem-declared objects.
+        objects = problem.all_objects
+        self.object_to_id: dict[mm.Object, int] = {
+            obj: i + id_offset for i, obj in enumerate(objects)
+        }
         self.action_ids: list[int] = []
         self.virtual_ids: list[int] = []
         self.auxiliary_ids: dict[Any, int] = {}
 
     def _get_next_id(self) -> int:
-        return self.id_offset + len(self.object_index_to_id) + len(self.action_ids) + len(self.virtual_ids) + len(self.auxiliary_ids)
+        return self.id_offset + len(self.object_to_id) + len(self.action_ids) + len(self.virtual_ids) + len(self.auxiliary_ids)
 
-    def get_object_id(self, object_index: int) -> int:
-        return self.object_index_to_id[object_index]
+    def get_object_id(self, obj: mm.Object) -> int:
+        return self.object_to_id[obj]
 
     def new_action_id(self) -> int:
         action_id = self._get_next_id()
@@ -100,10 +103,10 @@ class EncodingContext():
         return auxiliary_id
 
     def get_object_ids(self) -> list[int]:
-        return list(self.object_index_to_id.values())
+        return list(self.object_to_id.values())
 
     def get_object_count(self) -> int:
-        return len(self.object_index_to_id)
+        return len(self.object_to_id)
 
     def get_action_ids(self) -> list[int]:
         return self.action_ids

@@ -1,9 +1,9 @@
-import pymimir as mm
 import torch
 import torch.nn as nn
 
 from dataclasses import fields
 from pathlib import Path
+import pymimir as mm
 from typing import Any, Callable, Union
 
 from .bases import Encoder, QuantizationRecord
@@ -217,15 +217,15 @@ class RelationalGraphNeuralNetwork(nn.Module):
     This is the main class that implements a Relational Graph Neural Network.
 
     Example:
-        >>> domain = mm.Domain('path/to/domain.pddl')
+        >>> domain = mm.Domain.from_file('path/to/domain.pddl')
         >>> hparam_config = HyperparameterConfig(domain=domain, embedding_size=64)
+        >>> input_spec = (StateEncoder(), GoalEncoder())
+        >>> output_spec = [('value', ObjectsScalarDecoder(hparam_config))]
         >>> module_config = ModuleConfig(
         ...     aggregation_function=MeanAggregation(),
         ...     message_function=PredicateMLPMessages(hparam_config, input_spec),
         ...     update_function=MLPUpdates(hparam_config)
         ... )
-        >>> input_spec = (StateEncoder(), GoalEncoder())
-        >>> output_spec = [('q_values', ActionScalarDecoder(hparam_config))]
         >>> model = RelationalGraphNeuralNetwork(
         ...     hparam_config, module_config, input_spec, output_spec
         ... )
