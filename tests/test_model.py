@@ -87,6 +87,68 @@ def test_forward_model(dom: str, agg: AggregationFunction, layers: int, size: in
     assert value.shape == (1,)
     assert value.numel() == 1
 
+
+def test_forward_with_lifted_nullary_facts_and_unary_transition_effect() -> None:
+    domain = mm.Domain.from_pddl(
+        """
+(define (domain nullary-forward)
+    (:requirements :strips)
+    (:predicates (ready))
+    (:action clear
+        :parameters ()
+        :precondition (ready)
+        :effect (not (ready))
+    )
+)
+""".strip()
+    )
+    problem = mm.Problem.from_pddl(
+        domain,
+        """
+(define (problem nullary-forward-problem)
+    (:domain nullary-forward)
+    (:objects first second)
+    (:init (ready))
+    (:goal (ready))
+)
+""".strip(),
+    )
+    state = problem.initial_state
+    successor = state.applicable_actions()[0].apply(state)
+    transition = ([successor], (), problem.goal)
+    input_spec = (
+        StateEncoder(),
+        GoalEncoder(),
+        ExpressiveStateEncoder(),
+        ExpressiveGoalEncoder(),
+        TransitionEffectsEncoder(),
+    )
+    hparam_config = HyperparameterConfig(
+        domain=domain,
+        num_layers=2,
+        embedding_size=4,
+    )
+    module_config = ModuleConfig(
+        aggregation_function=MeanAggregation(),
+        message_function=PredicateMLPMessages(hparam_config, input_spec),
+        update_function=MLPUpdates(hparam_config),
+    )
+    model = RelationalGraphNeuralNetwork(
+        hparam_config,
+        module_config,
+        input_spec,
+        [("value", ObjectsScalarDecoder(hparam_config))],
+    )
+
+    output = model.forward(
+        [(state, problem.goal, state, problem.goal, transition)]
+    )
+    value = output.readout("value")
+    assert isinstance(value, torch.Tensor)
+    assert value.shape == (1,)
+    assert torch.isfinite(value).all()
+
+
 @pytest.mark.parametrize("domain_name", [('blocks'), ('gripper')])
 def test_forward_hook(domain_name: str):
     domain_path = DATA_DIR / domain_name / 'domain.pddl'

@@ -90,7 +90,7 @@ The encoding system transforms PDDL structures into graph neural network inputs 
 - `StateEncoder()`: Current planning state
 - `GoalEncoder()`: Goal specification
 - `GroundActionsEncoder()`: Available actions
-- `TransitionEffectsEncoder()`: Action effects
+- `TransitionEffectsEncoder()`: Ordered successor states and their realized transition effects
 
 **Decoder Classes**:
 - `ActionScalarDecoder(config)`: Scalar values over actions

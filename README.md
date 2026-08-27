@@ -29,7 +29,7 @@ pip install pymimir-rgnn
 
 - Python 3.11+
 - PyTorch 2.6.0+
-- Pymimir 0.14.0b2+
+- Pymimir 0.14.0b3
 
 ## Quick Start
 
@@ -72,11 +72,27 @@ model = rgnn.RelationalGraphNeuralNetwork(hparam_config, module_config, input_sp
 # q_values = outputs.readout('q_values')
 ```
 
-Pymimir 0.14.0b2 exposes complete derived-state and PDDL type information.
-Mimir-RGNN encodes those features directly from the public interface. Numeric
-PDDL remains intentionally unsupported. See [the migration decision
-log](https://github.com/simon-stahlberg/mimir-rgnn/blob/master/PYMIMIR_0_14_MIGRATION.md)
-for the interface contract and graph-schema changes.
+Pymimir 0.14.0b3 provides the native `pymimir.learning` extraction used by all
+built-in RGNN encoders. One native encoding context owns the complete input
+batch: RGNN begins and ends each instance around the existing instance-major,
+polymorphic encoder loop, then materializes one packed `int32` relation buffer
+and the node metadata once. PyTorch creates one CPU tensor from that buffer;
+each native relation is a view, and accelerator encoding transfers the packed
+tensor only once.
+State, goal, ground-action, transition-effect, virtual-node, and expressive
+encoders delegate their traversal and relation assembly directly to Mimir.
+Custom encoders remain freely mixable in specification order and allocate IDs
+through that same context. The public `EncodedTensors` interface and model
+checkpoint layout is unchanged for domains without nullary predicates.
+
+Nullary predicates are represented as unary relations over every canonical
+problem object, including domain constants. Goal and expressive encoders use
+the same lifting. A nullary transition effect is instead represented by the
+transition node alone, as `P(transition)`. Consequently, relation arities—and
+therefore checkpoint structure—change for domains that contain nullary
+predicates.
+
+Numeric PDDL remains intentionally unsupported.
 
 ## API Overview
 
@@ -113,7 +129,15 @@ Inherit from `Encoder` base class to define custom input processing:
 - **`StateEncoder`**: Current state of the planning problem
 - **`GoalEncoder`**: Goal specification  
 - **`GroundActionsEncoder`**: Available ground actions
-- **`TransitionEffectsEncoder`**: Action effects and transitions
+- **`TransitionEffectsEncoder`**: Ordered successor states and their realized transition effects
+
+`StateEncoder`, `GoalEncoder`, and `TransitionEffectsEncoder` expose
+`get_relation_descriptors(domain)` for semantic relation discovery. Each
+`EncoderRelation` identifies its source symbol and `EncoderRelationKind`, so
+callers do not need to infer meaning from relation names or list positions.
+`TransitionEffectsEncoder` consumes
+`(ordered_successor_states, effect_relations, goal_condition)`; relation index
+pairs refer to positions in the successor sequence.
 
 ### Decoder Classes
 

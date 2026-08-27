@@ -3,6 +3,7 @@ import torch
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from pymimir.learning import EncodingContext
 from typing import Any, Literal
 
 
@@ -49,6 +50,11 @@ class EncodedTensors:
     def __init__(self):
         """Initialize empty encoded tensors for graph representation."""
         self.flattened_relations: dict[str, torch.Tensor] = {}
+        # Native relation tensors are views into one packed allocation. Keep
+        # its target-device base explicit so the shared ownership is clear.
+        # On CPU this base is the frombuffer tensor and retains the exporter;
+        # on other devices it owns the result of the one packed copy.
+        self._native_relation_values: torch.Tensor | None = None
         self.node_count: int = 0
         self.node_sizes: torch.Tensor = torch.LongTensor()
         self.object_sizes: torch.Tensor = torch.LongTensor()
@@ -59,75 +65,6 @@ class EncodedTensors:
         self.virtual_indices: torch.Tensor = torch.LongTensor()
         self.auxiliary_sizes: torch.Tensor = torch.LongTensor()
         self.auxiliary_indices: torch.Tensor = torch.LongTensor()
-
-
-class EncodingContext():
-    def __init__(self, problem: mm.Problem, id_offset: int) -> None:
-        self.problem = problem
-        self.id_offset = id_offset
-
-        # Pymimir exposes one canonical object order for the complete problem:
-        # domain constants first, followed by problem-declared objects.
-        objects = problem.all_objects
-        self.object_to_id: dict[mm.Object, int] = {
-            obj: i + id_offset for i, obj in enumerate(objects)
-        }
-        self.action_ids: list[int] = []
-        self.virtual_ids: list[int] = []
-        self.auxiliary_ids: dict[Any, int] = {}
-
-    def _get_next_id(self) -> int:
-        return self.id_offset + len(self.object_to_id) + len(self.action_ids) + len(self.virtual_ids) + len(self.auxiliary_ids)
-
-    def get_object_id(self, obj: mm.Object) -> int:
-        return self.object_to_id[obj]
-
-    def new_action_id(self) -> int:
-        action_id = self._get_next_id()
-        self.action_ids.append(action_id)
-        return action_id
-
-    def new_virtual_id(self) -> int:
-        virtual_id = self._get_next_id()
-        self.virtual_ids.append(virtual_id)
-        return virtual_id
-
-    def new_or_existing_virtual_id(self) -> int:
-        return self.virtual_ids[-1] if self.virtual_ids else self.new_virtual_id()
-
-    def new_or_existing_auxiliary_id(self, key: Any) -> int:
-        if key in self.auxiliary_ids:
-            return self.auxiliary_ids[key]
-        auxiliary_id = self._get_next_id()
-        self.auxiliary_ids[key] = auxiliary_id
-        return auxiliary_id
-
-    def get_object_ids(self) -> list[int]:
-        return list(self.object_to_id.values())
-
-    def get_object_count(self) -> int:
-        return len(self.object_to_id)
-
-    def get_action_ids(self) -> list[int]:
-        return self.action_ids
-
-    def get_action_count(self) -> int:
-        return len(self.action_ids)
-
-    def get_virtual_ids(self) -> list[int]:
-        return self.virtual_ids
-
-    def get_virtual_count(self) -> int:
-        return len(self.virtual_ids)
-
-    def get_auxiliary_ids(self) -> list[int]:
-        return list(self.auxiliary_ids.values())
-
-    def get_auxiliary_count(self) -> int:
-        return len(self.auxiliary_ids)
-
-    def get_node_count(self) -> int:
-        return self.get_object_count() + self.get_action_count() + self.get_virtual_count() + self.get_auxiliary_count()
 
 
 class Encoder(ABC):
@@ -157,8 +94,9 @@ class Encoder(ABC):
         Args:
             input_value: The input data to encode (state, goal, actions, etc.).
             state: The current planning state for context.
-            encoding: The EncodedLists object to populate with graph structure.
-            context: Context for tracking local additions to the encoding.
+            encoding: Python-owned relation lists available to custom encoders.
+            context: Native batch context whose current instance owns node IDs
+                and relations emitted by built-in encoders.
         """
         pass
 
