@@ -39,9 +39,15 @@ class ActionScalarDecoder(Decoder):
         action_embeddings = node_embeddings.index_select(0, encoding.action_indices)
         object_embeddings = node_embeddings.index_select(0, encoding.object_indices)
         object_aggregation = self._object_readout.forward(object_embeddings, encoding.object_sizes)
-        object_aggregation = object_aggregation.repeat_interleave(encoding.action_sizes, dim=0)
+        object_aggregation = object_aggregation.repeat_interleave(
+            encoding.action_sizes,
+            dim=0,
+            output_size=action_embeddings.shape[0],
+        )
         values = self._action_value.forward(torch.cat((action_embeddings, object_aggregation), dim=1))
-        return [action_values.view(-1) for action_values in values.split(encoding.action_sizes.tolist())]  # type: ignore
+        if len(encoding.action_counts) == 1:
+            return [values.view(-1)]
+        return [action_values.view(-1) for action_values in values.split(encoding.action_counts)]  # type: ignore
 
 
 class ActionEmbeddingDecoder(Decoder):
@@ -62,7 +68,10 @@ class ActionEmbeddingDecoder(Decoder):
         Returns:
             Tuple of tensors, each containing the embeddings of all action nodes.
         """
-        return node_embeddings.index_select(0, encoding.action_indices).split_with_sizes(encoding.action_sizes.tolist())
+        action_embeddings = node_embeddings.index_select(0, encoding.action_indices)
+        if len(encoding.action_counts) == 1:
+            return (action_embeddings,)
+        return action_embeddings.split_with_sizes(encoding.action_counts)
 
 
 class ObjectsScalarDecoder(Decoder):
@@ -117,4 +126,7 @@ class ObjectsEmbeddingDecoder(Decoder):
         Returns:
             Tuple of tensors, each containing the embeddings of object nodes for an input instance.
         """
-        return node_embeddings.index_select(0, encoding.object_indices).split_with_sizes(encoding.object_sizes.tolist())
+        object_embeddings = node_embeddings.index_select(0, encoding.object_indices)
+        if encoding.object_sizes.numel() == 1:
+            return (object_embeddings,)
+        return object_embeddings.split_with_sizes(encoding.object_sizes.tolist())

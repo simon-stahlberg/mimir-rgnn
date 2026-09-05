@@ -88,6 +88,69 @@ def test_forward_model(dom: str, agg: AggregationFunction, layers: int, size: in
     assert value.numel() == 1
 
 
+def test_forward_model_uses_model_dtype_for_node_embeddings():
+    domain = mm.Domain.from_file(DATA_DIR / 'blocks' / 'domain.pddl')
+    problem = mm.Problem.from_file(domain, DATA_DIR / 'blocks' / 'problem.pddl')
+    hparam_config = HyperparameterConfig(
+        domain=domain,
+        num_layers=1,
+        embedding_size=4,
+    )
+    input_spec = (StateEncoder(), GoalEncoder())
+    module_config = ModuleConfig(
+        aggregation_function=MeanAggregation(),
+        message_function=PredicateMLPMessages(hparam_config, input_spec),
+        update_function=MLPUpdates(hparam_config),
+    )
+    model = RelationalGraphNeuralNetwork(
+        hparam_config,
+        module_config,
+        input_spec,
+        [('value', ObjectsScalarDecoder(hparam_config))],
+    ).to(dtype=torch.float64)
+
+    output = model([(problem.initial_state, problem.goal)]).readout('value')
+
+    assert output.dtype == torch.float64
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+@pytest.mark.parametrize("layers", [0, 2])
+def test_forward_model_supports_parameter_free_message_passing(dtype, layers):
+    class ConstantMessages(MessageFunction):
+        def forward(self, node_embeddings, relations):
+            indices = torch.arange(node_embeddings.shape[0], device=node_embeddings.device)
+            return torch.ones_like(node_embeddings), indices
+
+    class MessageUpdates(UpdateFunction):
+        def forward(self, node_embeddings, aggregated_messages):
+            return aggregated_messages
+
+    domain = mm.Domain.from_file(DATA_DIR / 'blocks' / 'domain.pddl')
+    problem = mm.Problem.from_file(domain, DATA_DIR / 'blocks' / 'problem.pddl')
+    config = HyperparameterConfig(
+        domain=domain,
+        num_layers=layers,
+        embedding_size=4,
+        normalize_updates=False,
+    )
+    model = RelationalGraphNeuralNetwork(
+        config,
+        ModuleConfig(MeanAggregation(), ConstantMessages(), MessageUpdates()),
+        (StateEncoder(),),
+        [('embeddings', ObjectsEmbeddingDecoder())],
+    ).to(dtype=dtype)
+    inputs = [(problem.initial_state,)]
+
+    output, = model(inputs).readout('embeddings')
+    prepared_output, = model.curry_forward(inputs)().readout('embeddings')
+
+    assert output.dtype == dtype
+    assert output.numel() > 0
+    assert torch.equal(output, torch.full_like(output, layers))
+    assert torch.equal(prepared_output, output)
+
+
 def test_forward_with_lifted_nullary_facts_and_unary_transition_effect() -> None:
     domain = mm.Domain.from_pddl(
         """
@@ -330,6 +393,62 @@ def test_simple_forward(domain_name: str):
 
     assert hasattr(state_value, 'shape'), "State value should be a tensor"
     assert len(state_value.shape) == 1, "State value should be 1D tensor"
+
+
+def test_sum_readout_single_group_matches_batched_values_and_gradients():
+    readout = SumReadout(4, 3).double()
+    nodes = torch.randn(5, 4, dtype=torch.float64, requires_grad=True)
+    other_nodes = torch.randn(3, 4, dtype=torch.float64)
+
+    single = readout(nodes, torch.tensor([5]))
+    batched = readout(torch.cat((nodes, other_nodes)), torch.tensor([5, 3]))[:1]
+
+    torch.testing.assert_close(single, batched)
+    inputs = (nodes, *readout.parameters())
+    single_gradients = torch.autograd.grad(single.sum(), inputs)
+    batched_gradients = torch.autograd.grad(batched.sum(), inputs)
+    for single_gradient, batched_gradient in zip(single_gradients, batched_gradients, strict=True):
+        torch.testing.assert_close(single_gradient, batched_gradient)
+
+
+@pytest.mark.parametrize("empty_actions", [False, True])
+def test_decoders_preserve_single_and_batched_outputs(empty_actions):
+    domain = mm.Domain.from_file(DATA_DIR / 'blocks' / 'domain.pddl')
+    problem = mm.Problem.from_file(domain, DATA_DIR / 'blocks' / 'problem.pddl')
+    config = HyperparameterConfig(domain=domain, embedding_size=4, num_layers=2)
+    input_spec = (StateEncoder(), GroundActionsEncoder())
+    model = RelationalGraphNeuralNetwork(
+        config,
+        ModuleConfig(
+            MeanAggregation(),
+            PredicateMLPMessages(config, input_spec),
+            MLPUpdates(config),
+        ),
+        input_spec,
+        [
+            ('q_values', ActionScalarDecoder(config)),
+            ('actions', ActionEmbeddingDecoder()),
+            ('objects', ObjectsEmbeddingDecoder()),
+        ],
+    )
+    state = problem.initial_state
+    actions = [] if empty_actions else list(state.applicable_actions())
+    instance = (state, actions)
+
+    single = model([instance])
+    batched = model([instance, instance])
+
+    for name, container_type in [('q_values', list), ('actions', tuple), ('objects', tuple)]:
+        single_outputs = single.readout(name)
+        batch_outputs = batched.readout(name)
+        assert isinstance(single_outputs, container_type)
+        assert isinstance(batch_outputs, container_type)
+        assert len(single_outputs) == 1
+        assert len(batch_outputs) == 2
+        for output in batch_outputs:
+            torch.testing.assert_close(single_outputs[0], output)
+    assert single.readout('q_values')[0].shape == (len(actions),)
+    assert single.readout('actions')[0].shape == (len(actions), 4)
 
 
 def test_decoder_constructors():

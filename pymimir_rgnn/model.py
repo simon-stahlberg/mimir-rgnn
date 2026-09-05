@@ -159,56 +159,66 @@ class RelationalLayerStackModule(nn.Module):
         """Remove all registered hook functions."""
         self._hooks.clear()
 
-    def forward(self, input: EncodedTensors) -> torch.Tensor:
+    def forward(self, input: EncodedTensors, node_embeddings: torch.Tensor) -> torch.Tensor:
         """Run multiple layers of message passing.
 
         Args:
             input: The encoded graph input containing relations and node information.
+            node_embeddings: Initial node embeddings for the encoded graph.
 
         Returns:
             Final node embeddings after all message passing layers.
         """
         self._message.setup(input.flattened_relations)
-        device = input.node_sizes.device
-        node_embeddings: torch.Tensor = torch.zeros([int(input.node_sizes.sum()), self._config.embedding_size], dtype=torch.float, requires_grad=True, device=device)
-        all_quantization_records: list[QuantizationRecord] = []
-        self._latest_quantization_records = ()
-        self._latest_layer_quantization_records = ()
-        for iteration in range(self._config.num_layers):
-            self._message.begin_quantization_recording(iteration)
-            next_node_embeddings: torch.Tensor = self._relation_network(node_embeddings, input.flattened_relations)
-            layer_quantization_records = list(self._message.quantization_records())
-            if self._config.normalize_updates:
-                next_node_embeddings = self._update_normalization(next_node_embeddings)
-            if self._config.global_readout:
-                global_embedding: torch.Tensor = self._global_readout(node_embeddings, input.node_sizes)
-                global_messages: torch.Tensor = self._global_update(torch.cat((node_embeddings, global_embedding.repeat_interleave(input.node_sizes, dim=0)), 1))
+        try:
+            self._latest_quantization_records = ()
+            self._latest_layer_quantization_records = ()
+            for layer_index in range(self._config.num_layers):
+                self._message.begin_quantization_recording(layer_index)
+                updates = self._relation_network(node_embeddings, input.flattened_relations)
+                layer_records = list(self._message.quantization_records())
+
                 if self._config.normalize_updates:
-                    global_messages = self._update_normalization(global_messages)
-                next_node_embeddings = global_messages + next_node_embeddings
-            if self._config.binarize_updates:
-                update_logits = next_node_embeddings
-                next_node_embeddings = binarize(update_logits)
-                layer_quantization_records.append(
-                    QuantizationRecord(
-                        kind="binary_update",
-                        layer_index=iteration,
-                        logits=update_logits,
-                        thresholds=(0.0,),
-                        values=next_node_embeddings,
+                    updates = self._update_normalization(updates)
+                if self._config.global_readout:
+                    global_embeddings = self._global_readout(node_embeddings, input.node_sizes)
+                    per_node_global_embeddings = global_embeddings.repeat_interleave(
+                        input.node_sizes,
+                        dim=0,
+                        output_size=node_embeddings.shape[0],
                     )
-                )
-            if self._config.residual_updates:
-                next_node_embeddings = node_embeddings + next_node_embeddings
-            elif self._config.or_residual_updates:
-                next_node_embeddings = torch.maximum(node_embeddings, next_node_embeddings)
-            node_embeddings = next_node_embeddings
-            self._latest_layer_quantization_records = tuple(layer_quantization_records)
-            all_quantization_records.extend(layer_quantization_records)
-            self._latest_quantization_records = tuple(all_quantization_records)
-            self._notify_hooks(iteration, node_embeddings)
-        self._message.cleanup()
-        return node_embeddings
+                    global_inputs = torch.cat((node_embeddings, per_node_global_embeddings), dim=1)
+                    global_updates = self._global_update(global_inputs)
+                    if self._config.normalize_updates:
+                        global_updates = self._update_normalization(global_updates)
+                    updates = global_updates + updates
+
+                if self._config.binarize_updates:
+                    update_logits = updates
+                    updates = binarize(update_logits)
+                    layer_records.append(
+                        QuantizationRecord(
+                            kind="binary_update",
+                            layer_index=layer_index,
+                            logits=update_logits,
+                            thresholds=(0.0,),
+                            values=updates,
+                        )
+                    )
+
+                if self._config.residual_updates:
+                    node_embeddings = node_embeddings + updates
+                elif self._config.or_residual_updates:
+                    node_embeddings = torch.maximum(node_embeddings, updates)
+                else:
+                    node_embeddings = updates
+
+                self._latest_layer_quantization_records = tuple(layer_records)
+                self._latest_quantization_records += self._latest_layer_quantization_records
+                self._notify_hooks(layer_index, node_embeddings)
+            return node_embeddings
+        finally:
+            self._message.cleanup()
 
 
 class RelationalGraphNeuralNetwork(nn.Module):
@@ -337,7 +347,11 @@ class RelationalGraphNeuralNetwork(nn.Module):
                 forward_state = ForwardState(layer_index, curried_readouts, self._mpnn_module.layer_quantization_records())
                 self._notify_hooks(forward_state)
             self._mpnn_module.add_hook(hook_function)
-        node_embeddings = self._mpnn_module.forward(input)
+        node_embeddings = self._dummy.new_zeros(
+            (input.node_count, self._hparam_config.embedding_size),
+            requires_grad=False,
+        )
+        node_embeddings = self._mpnn_module(input, node_embeddings)
         self._latest_quantization_records = self._mpnn_module.quantization_records()
         if len(self._hooks) > 0:
             self._mpnn_module.clear_hooks()

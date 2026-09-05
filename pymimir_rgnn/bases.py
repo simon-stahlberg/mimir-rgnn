@@ -60,6 +60,7 @@ class EncodedTensors:
         self.object_sizes: torch.Tensor = torch.LongTensor()
         self.object_indices: torch.Tensor = torch.LongTensor()
         self.action_sizes: torch.Tensor = torch.LongTensor()
+        self.action_counts: tuple[int, ...] = ()
         self.action_indices: torch.Tensor = torch.LongTensor()
         self.virtual_sizes: torch.Tensor = torch.LongTensor()
         self.virtual_indices: torch.Tensor = torch.LongTensor()

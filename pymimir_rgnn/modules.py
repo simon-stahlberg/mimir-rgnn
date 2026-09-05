@@ -200,6 +200,8 @@ class SumReadout(nn.Module):
         Returns:
             Aggregated and transformed embeddings, one per group.
         """
+        if node_sizes.numel() == 1:
+            return self._value(node_embeddings.sum(dim=0, keepdim=True))
         cumsum_indices = node_sizes.cumsum(0) - 1
         cumsum_states = node_embeddings.cumsum(0).index_select(0, cumsum_indices)
         aggregated_embeddings = torch.cat((cumsum_states[0].view(1, -1), cumsum_states[1:] - cumsum_states[0:-1]))

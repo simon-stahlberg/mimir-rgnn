@@ -131,6 +131,7 @@ def test_standard_native_encoding_uses_expected_offsets() -> None:
     assert actual.object_sizes.tolist() == [6, 6]
     assert actual.object_indices.tolist() == [*range(0, 6), *range(12, 18)]
     assert actual.action_sizes.tolist() == [6, 6]
+    assert actual.action_counts == (6, 6)
     assert actual.action_indices.tolist() == [*range(6, 12), *range(18, 24)]
     assert _relation_rows(actual.flattened_relations["relation_room"], 1) == [
         (0,),
@@ -680,6 +681,7 @@ def test_repeated_ground_actions_mix_with_custom_encoder_in_specification_order(
         CPU,
     )
     assert encoded.action_sizes.tolist() == [12]
+    assert encoded.action_counts == (12,)
     assert encoded.action_indices.tolist() == [
         *range(6, 12),
         *range(13, 19),

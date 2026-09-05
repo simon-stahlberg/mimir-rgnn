@@ -558,6 +558,7 @@ def get_input_from_encoders(input: list[tuple], input_specification: tuple[Encod
     encoding_tensors.object_sizes = torch.tensor(encoding_lists.object_sizes, dtype=torch.int, device=device, requires_grad=False)
     encoding_tensors.action_indices = torch.tensor(encoding_lists.action_indices, dtype=torch.int, device=device, requires_grad=False)
     encoding_tensors.action_sizes = torch.tensor(encoding_lists.action_sizes, dtype=torch.int, device=device, requires_grad=False)
+    encoding_tensors.action_counts = tuple(encoding_lists.action_sizes)
     encoding_tensors.virtual_indices = torch.tensor(encoding_lists.virtual_indices, dtype=torch.int, device=device, requires_grad=False)
     encoding_tensors.virtual_sizes = torch.tensor(encoding_lists.virtual_sizes, dtype=torch.int, device=device, requires_grad=False)
     encoding_tensors.auxiliary_indices = torch.tensor(encoding_lists.auxiliary_indices, dtype=torch.int, device=device, requires_grad=False)
