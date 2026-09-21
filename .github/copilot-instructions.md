@@ -304,7 +304,7 @@ tensor2 = torch.tensor(other_data, device=device)
 **Core Dependencies**:
 - **Python**: 3.11+ (required for type system features)
 - **PyTorch**: 2.6.0+ (core ML framework)
-- **Pymimir**: 0.14.0b2 (PDDL planning library)
+- **Pymimir**: 0.14.0b5 (PDDL planning library)
 
 **Development Dependencies**:
 - **pytest**: Testing framework

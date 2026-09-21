@@ -29,7 +29,7 @@ pip install pymimir-rgnn
 
 - Python 3.11+
 - PyTorch 2.6.0+
-- Pymimir 0.14.0b3
+- Pymimir 0.14.0b5
 
 ## Quick Start
 
@@ -72,7 +72,7 @@ model = rgnn.RelationalGraphNeuralNetwork(hparam_config, module_config, input_sp
 # q_values = outputs.readout('q_values')
 ```
 
-Pymimir 0.14.0b3 provides the native `pymimir.learning` extraction used by all
+Pymimir 0.14.0b5 provides the native `pymimir.learning` extraction used by all
 built-in RGNN encoders. One native encoding context owns the complete input
 batch: RGNN begins and ends each instance around the existing instance-major,
 polymorphic encoder loop, then materializes one packed `int32` relation buffer
