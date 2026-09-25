@@ -193,7 +193,7 @@ def test_one_batch_context_drives_every_native_encoder_in_specification_order(
     actions = state.applicable_actions()
     move = problem.action("move", "rooma", "roomb")
     successor = move.apply(state)
-    transition_input = ([successor], (), problem.goal)
+    transition_input = ([successor], [move], (), problem.goal)
 
     original_context_type = mm.learning.EncodingContext
     original_begin_instance = original_context_type.begin_instance
@@ -603,7 +603,7 @@ def test_goal_encoder_calls_native_with_each_instance_state(
     problem = mm.Problem.from_file(domain, DATA_DIR / "gripper" / "problem.pddl")
     state = problem.initial_state
     true_goal = problem.ground_condition(
-        problem.ground_literal(problem.fact("at", "ball2", "rooma"))
+        problem.ground_literal(problem.atom("at", "ball2", "rooma"))
     )
     original_encode_goal = mm.learning.encode_goal
     native_inputs: list[tuple[mm.State, mm.GroundConjunctiveCondition]] = []
@@ -712,7 +712,7 @@ def test_transition_and_native_actions_allocate_in_encoder_order() -> None:
     actions = state.applicable_actions()
     move = problem.action("move", "rooma", "roomb")
     successor = move.apply(state)
-    transition_input = ([successor], (), problem.goal)
+    transition_input = ([successor], [move], (), problem.goal)
 
     encoded = get_input_from_encoders(
         [(transition_input, state, actions)],
@@ -723,6 +723,7 @@ def test_transition_and_native_actions_allocate_in_encoder_order() -> None:
     assert encoded.action_indices.tolist() == [*range(6, 13)]
     assert encoded.flattened_relations["at-robby_pos"].tolist() == [6, 1]
     assert encoded.flattened_relations["at-robby_neg"].tolist() == [6, 0]
+    assert encoded.flattened_relations["action_name_move"].tolist() == [6]
     native_action_ids = {
         row[0]
         for action_schema in domain.actions
@@ -744,7 +745,7 @@ def test_each_native_encoder_propagates_native_errors(
     actions = state.applicable_actions()
     move = problem.action("move", "rooma", "roomb")
     successor = move.apply(state)
-    transition_input = ([successor], (), problem.goal)
+    transition_input = ([successor], [move], (), problem.goal)
 
     cases = (
         ("encode_state", (StateEncoder(),), (state,)),

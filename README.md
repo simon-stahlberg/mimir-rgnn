@@ -29,7 +29,7 @@ pip install pymimir-rgnn
 
 - Python 3.11+
 - PyTorch 2.6.0+
-- Pymimir 0.14.0b5
+- Pymimir 0.14.0b6
 
 ## Quick Start
 
@@ -72,7 +72,7 @@ model = rgnn.RelationalGraphNeuralNetwork(hparam_config, module_config, input_sp
 # q_values = outputs.readout('q_values')
 ```
 
-Pymimir 0.14.0b5 provides the native `pymimir.learning` extraction used by all
+Pymimir 0.14.0b6 provides the native `pymimir.learning` extraction used by all
 built-in RGNN encoders. One native encoding context owns the complete input
 batch: RGNN begins and ends each instance around the existing instance-major,
 polymorphic encoder loop, then materializes one packed `int32` relation buffer
@@ -136,8 +136,10 @@ Inherit from `Encoder` base class to define custom input processing:
 `EncoderRelation` identifies its source symbol and `EncoderRelationKind`, so
 callers do not need to infer meaning from relation names or list positions.
 `TransitionEffectsEncoder` consumes
-`(ordered_successor_states, effect_relations, goal_condition)`; relation index
-pairs refer to positions in the successor sequence.
+`(ordered_successor_states, actions, effect_relations, goal_condition)`, where
+`actions[i]` produced `successors[i]`; relation index pairs refer to positions
+in the successor sequence. Each transition node also gets the unary relation
+`action_name_<schema><suffix>` for the action that produced it.
 
 ### Decoder Classes
 

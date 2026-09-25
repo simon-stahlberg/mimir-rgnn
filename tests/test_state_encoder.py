@@ -193,6 +193,11 @@ def test_standard_encoder_relation_descriptors_expose_semantics() -> None:
         (ready)
         (linked ?left - item ?right - object)
     )
+    (:action reset
+        :parameters ()
+        :precondition (ready)
+        :effect (not (ready))
+    )
 )
 """.strip()
     )
@@ -282,6 +287,12 @@ def test_standard_encoder_relation_descriptors_expose_semantics() -> None:
                 2,
                 EncoderRelationKind.EFFECT_LINK,
                 None,
+            ),
+            EncoderRelation(
+                "action_name_reset_descriptor",
+                1,
+                EncoderRelationKind.ACTION_NAME,
+                "reset",
             ),
         }
     )
@@ -445,18 +456,20 @@ def test_predicate_encoders_apply_their_nullary_row_contracts() -> None:
 """.strip(),
     )
     first_state = first_problem.initial_state
-    first_successor = first_state.applicable_actions()[0].apply(first_state)
+    first_clear = first_state.applicable_actions()[0]
+    first_successor = first_clear.apply(first_state)
     second_initial_state = second_problem.initial_state
-    second_state = second_initial_state.applicable_actions()[0].apply(
-        second_initial_state
-    )
+    second_clear = second_initial_state.applicable_actions()[0]
+    second_state = second_clear.apply(second_initial_state)
     first_transition = (
         [first_successor],
+        [first_clear],
         (),
         first_problem.goal,
     )
     second_transition = (
         [second_initial_state],
+        [second_clear],
         (),
         second_problem.goal,
     )
@@ -537,6 +550,10 @@ def test_predicate_encoders_apply_their_nullary_row_contracts() -> None:
         encoded.flattened_relations["ready_suffix_pos_goal"],
         1,
     ) == [(second_transition_id,)]
+    assert _relation_rows(
+        encoded.flattened_relations["action_name_clear_suffix"],
+        1,
+    ) == [(first_transition_id,), (second_transition_id,)]
 
     assert encoded._native_relation_values is not None
     for relation_name in (
@@ -584,10 +601,11 @@ def test_nullary_transition_effect_is_present_without_objects() -> None:
 """.strip(),
     )
     state = problem.initial_state
-    successor = state.applicable_actions()[0].apply(state)
+    action = state.applicable_actions()[0]
+    successor = action.apply(state)
 
     encoded = get_input_from_encoders(
-        [(state, ([successor], (), problem.goal))],
+        [(state, ([successor], [action], (), problem.goal))],
         (StateEncoder(), TransitionEffectsEncoder()),
         torch.device("cpu"),
     )
@@ -685,7 +703,8 @@ def test_transition_effects_encoder_forwards_ordered_successors(
     )
     state = problem.initial_state
     actions = state.applicable_actions()
-    successors = tuple(action.apply(state) for action in actions[:2])
+    transition_actions = actions[:2]
+    successors = tuple(action.apply(state) for action in transition_actions)
     effect_relations = ((1, 0),)
     goal_condition = problem.goal
     calls: list[tuple[object, ...]] = []
@@ -700,7 +719,7 @@ def test_transition_effects_encoder_forwards_ordered_successors(
     )
 
     get_input_from_encoders(
-        [(state, (successors, effect_relations, goal_condition))],
+        [(state, (successors, transition_actions, effect_relations, goal_condition))],
         (StateEncoder(), TransitionEffectsEncoder(suffix="_ordered")),
         torch.device("cpu"),
     )
@@ -710,6 +729,7 @@ def test_transition_effects_encoder_forwards_ordered_successors(
         context,
         source,
         forwarded_successors,
+        forwarded_actions,
         forwarded_relations,
         goal,
         kwargs,
@@ -717,6 +737,7 @@ def test_transition_effects_encoder_forwards_ordered_successors(
     assert isinstance(context, EncodingContext)
     assert source is state
     assert forwarded_successors is successors
+    assert forwarded_actions is transition_actions
     assert forwarded_relations is effect_relations
     assert goal is goal_condition
     assert kwargs == {"suffix": "_ordered"}
@@ -728,11 +749,13 @@ def test_transition_effects_encoder_accepts_ordered_successor_states() -> None:
         DATA_DIR / "gripper" / "problem.pddl",
     )
     state = problem.initial_state
-    unchanged_successor = problem.action("move", "rooma", "rooma").apply(state)
+    stay = problem.action("move", "rooma", "rooma")
+    unchanged_successor = stay.apply(state)
     move = problem.action("move", "rooma", "roomb")
     changed_successor = move.apply(state)
     transition_input = (
         [unchanged_successor, changed_successor],
+        [stay, move],
         ((0, 1),),
         problem.goal,
     )
@@ -747,6 +770,7 @@ def test_transition_effects_encoder_accepts_ordered_successor_states() -> None:
     assert encoded.flattened_relations["at-robby_pos"].tolist() == [7, 1]
     assert encoded.flattened_relations["at-robby_neg"].tolist() == [7, 0]
     assert encoded.flattened_relations["effect_relation"].tolist() == [6, 7]
+    assert encoded.flattened_relations["action_name_move"].tolist() == [6, 7]
 
 
 @pytest.mark.parametrize(
@@ -905,8 +929,8 @@ def test_derived_domains_encode_truth_across_transitions(
     state = problem.initial_state
     successor = state.applicable_actions()[0].apply(state)
 
-    assert state.contains(problem.fact("reachable", "item"))
-    assert not successor.contains(problem.fact("reachable", "item"))
+    assert state.contains(problem.atom("reachable", "item"))
+    assert not successor.contains(problem.atom("reachable", "item"))
 
     initial_encoding = get_input_from_encoders(
         [(state,)],

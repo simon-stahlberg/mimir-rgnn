@@ -177,8 +177,9 @@ def test_forward_with_lifted_nullary_facts_and_unary_transition_effect() -> None
 """.strip(),
     )
     state = problem.initial_state
-    successor = state.applicable_actions()[0].apply(state)
-    transition = ([successor], (), problem.goal)
+    clear = state.applicable_actions()[0]
+    successor = clear.apply(state)
+    transition = ([successor], [clear], (), problem.goal)
     input_spec = (
         StateEncoder(),
         GoalEncoder(),

@@ -26,6 +26,7 @@ class EncoderRelationKind(Enum):
     EFFECT_POSITIVE_GOAL = "effect_positive_goal"
     EFFECT_NEGATIVE_GOAL = "effect_negative_goal"
     EFFECT_LINK = "effect_link"
+    ACTION_NAME = "action_name"
 
 
 @dataclass(frozen=True)
@@ -345,7 +346,8 @@ class TransitionEffectsEncoder(Encoder):
 
     This encoder compares an ordered sequence of successor states with the
     current state. Each successor becomes a new transition node, in input order,
-    with relations connecting it to the fluent and derived atoms that changed.
+    with relations connecting it to the fluent and derived atoms that changed,
+    and a unary relation naming the action schema that produced the successor.
     """
 
     def __init__(self, suffix: str = '') -> None:
@@ -368,7 +370,8 @@ class TransitionEffectsEncoder(Encoder):
             domain: The PDDL domain containing predicate definitions.
 
         Returns:
-            Predicate effect descriptors and the structural effect link.
+            Predicate effect descriptors, the structural effect link, and one
+            action-name descriptor per action schema.
         """
         descriptors: list[EncoderRelation] = []
         variants = (
@@ -400,6 +403,15 @@ class TransitionEffectsEncoder(Encoder):
                 source_name=None,
             )
         )
+        descriptors.extend(
+            EncoderRelation(
+                name=f'action_name_{action.name}{self.suffix}',
+                arity=1,
+                kind=EncoderRelationKind.ACTION_NAME,
+                source_name=action.name,
+            )
+            for action in domain.actions
+        )
         return descriptors
 
     def get_relations(self, domain: mm.Domain) -> list[tuple[str, int]]:
@@ -416,16 +428,22 @@ class TransitionEffectsEncoder(Encoder):
         encoding: EncodedLists,
         context: EncodingContext,
     ) -> None:
-        assert isinstance(input_value, tuple) and len(input_value) == 3, (
-            f'TransitionEffectsEncoder expected a 3-tuple (successors, effect_relations, goal_condition), '
+        assert isinstance(input_value, tuple) and len(input_value) == 4, (
+            f'TransitionEffectsEncoder expected a 4-tuple (successors, actions, effect_relations, goal_condition), '
             f'got {type(input_value)}'
         )
-        successors, effect_relations, goal_condition = input_value
+        successors, actions, effect_relations, goal_condition = input_value
         assert isinstance(successors, Sequence) and all(
             isinstance(successor, mm.State) for successor in successors
         ), (
             'TransitionEffectsEncoder expected an ordered sequence of State '
             'values as the first element.'
+        )
+        assert isinstance(actions, Sequence) and all(
+            isinstance(action, mm.GroundAction) for action in actions
+        ), (
+            'TransitionEffectsEncoder expected an ordered sequence of GroundAction '
+            'values, one per successor, as the second element.'
         )
         assert isinstance(goal_condition, mm.GroundConjunctiveCondition), (
             f'TransitionEffectsEncoder expected a GroundConjunctiveCondition as the third element, '
@@ -435,6 +453,7 @@ class TransitionEffectsEncoder(Encoder):
             context,
             state,
             successors,
+            actions,
             effect_relations,
             goal_condition,
             suffix=self.suffix,
