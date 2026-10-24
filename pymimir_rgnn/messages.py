@@ -37,6 +37,8 @@ class PredicateMLPMessages(MessageFunction):
     relation.
     """
 
+    supports_replay = True
+
     def __init__(self,
                  hparam_config: HyperparameterConfig,
                  input_spec: tuple[Encoder, ...]):
@@ -82,55 +84,11 @@ class PredicateMLPMessages(MessageFunction):
         Raises:
             ValueError: If no MLP is found for a nonempty relation.
         """
-        by_input_size: dict[int, list[tuple[str, torch.Tensor]]] = {}
-        for relation_name, argument_indices in relations.items():
-            if argument_indices.numel() > 0:
-                if relation_name not in self._relation_mlps:
-                    raise ValueError(f"No MLP found for relation '{relation_name}'")
-                relation_module: MLP = self._relation_mlps[relation_name]  # type: ignore
-                by_input_size.setdefault(relation_module.input_size, []).append((relation_name, argument_indices))
-        groups: list[tuple[int, list[tuple[str, torch.Tensor]]]] = []
-        for input_size, members in by_input_size.items():
-            arity = input_size // self._embedding_size
-            # Largest relations first, split so that padding adds at most half to the rows of a group.
-            members.sort(key=lambda member: member[1].numel(), reverse=True)
-            group: list[tuple[str, torch.Tensor]] = []
-            group_atoms = 0
-            for member in members:
-                num_atoms = member[1].numel() // arity
-                if group and 2 * (len(group) + 1) * (group[0][1].numel() // arity) > 3 * (group_atoms + num_atoms):
-                    groups.append((input_size, group))
-                    group, group_atoms = [], 0
-                group.append(member)
-                group_atoms += num_atoms
-            groups.append((input_size, group))
+        groups = self._split_by_arity(relations)
         # The messages are in the order of the groups, and within a group in the order of its relations; a group's
         # argument indices are a slice of the output indices.
         output_indices = torch.cat([argument_indices for _, members in groups for _, argument_indices in members])
-        device = output_indices.device
-        # The padded row of each atom, for all groups at once: relation r of a group starts at row r * width of the
-        # group's padded rows, rather than after the atoms before it.
-        shifts: list[int] = []
-        counts: list[int] = []
-        atoms_per_group: list[int] = []
-        total_atoms = 0
-        for input_size, members in groups:
-            arity = input_size // self._embedding_size
-            width = members[0][1].numel() // arity
-            first_atom = 0
-            for row, (_, argument_indices) in enumerate(members):
-                shifts.append(row * width - first_atom - total_atoms)
-                counts.append(argument_indices.numel() // arity)
-                first_atom += counts[-1]
-            atoms_per_group.append(first_atom)
-            total_atoms += first_atom
-        host = torch.tensor(shifts + counts, dtype=torch.long)
-        if device.type == 'cuda':
-            # One copy from pinned memory, which does not wait for the device.
-            host = host.pin_memory()
-        host = host.to(device, non_blocking=True)
-        rows = torch.arange(total_atoms, device=device) \
-            + torch.repeat_interleave(host[:len(shifts)], host[len(shifts):], output_size=total_atoms)
+        rows, atoms_per_group = self._padded_rows(groups, output_indices.device)
         relation_groups: list[_RelationGroup] = []
         first_atom = 0
         first_index = 0
@@ -156,6 +114,65 @@ class PredicateMLPMessages(MessageFunction):
             first_atom += num_atoms
             first_index += num_atoms * arity
         return relation_groups, output_indices
+
+    def _split_by_arity(self, relations: dict[str, torch.Tensor]) -> list[tuple[int, list[tuple[str, torch.Tensor]]]]:
+        """The nonempty relations in groups of one arity, as (input size, [(relation name, argument indices)]).
+
+        Within an arity the relations go largest first, split so that padding adds at most half to the rows of a
+        group.
+        """
+        by_input_size: dict[int, list[tuple[str, torch.Tensor]]] = {}
+        for relation_name, argument_indices in relations.items():
+            if argument_indices.numel() > 0:
+                if relation_name not in self._relation_mlps:
+                    raise ValueError(f"No MLP found for relation '{relation_name}'")
+                relation_module: MLP = self._relation_mlps[relation_name]  # type: ignore
+                by_input_size.setdefault(relation_module.input_size, []).append((relation_name, argument_indices))
+        groups: list[tuple[int, list[tuple[str, torch.Tensor]]]] = []
+        for input_size, members in by_input_size.items():
+            arity = input_size // self._embedding_size
+            members.sort(key=lambda member: member[1].numel(), reverse=True)
+            group: list[tuple[str, torch.Tensor]] = []
+            group_atoms = 0
+            for member in members:
+                num_atoms = member[1].numel() // arity
+                if group and 2 * (len(group) + 1) * (group[0][1].numel() // arity) > 3 * (group_atoms + num_atoms):
+                    groups.append((input_size, group))
+                    group, group_atoms = [], 0
+                group.append(member)
+                group_atoms += num_atoms
+            groups.append((input_size, group))
+        return groups
+
+    def _padded_rows(self, groups: list[tuple[int, list[tuple[str, torch.Tensor]]]],
+                     device: torch.device) -> tuple[torch.Tensor, list[int]]:
+        """The padded row of each atom, for all groups at once, and the number of atoms of each group.
+
+        Relation r of a group starts at row r * width of the group's padded rows, rather than after the atoms before
+        it, where width is the number of atoms of the group's largest relation.
+        """
+        shifts: list[int] = []
+        counts: list[int] = []
+        atoms_per_group: list[int] = []
+        total_atoms = 0
+        for input_size, members in groups:
+            arity = input_size // self._embedding_size
+            width = members[0][1].numel() // arity
+            first_atom = 0
+            for row, (_, argument_indices) in enumerate(members):
+                shifts.append(row * width - first_atom - total_atoms)
+                counts.append(argument_indices.numel() // arity)
+                first_atom += counts[-1]
+            atoms_per_group.append(first_atom)
+            total_atoms += first_atom
+        host = torch.tensor(shifts + counts, dtype=torch.long)
+        if device.type == 'cuda':
+            # One copy from pinned memory, which does not wait for the device.
+            host = host.pin_memory()
+        host = host.to(device, non_blocking=True)
+        rows = torch.arange(total_atoms, device=device) \
+            + torch.repeat_interleave(host[:len(shifts)], host[len(shifts):], output_size=total_atoms)
+        return rows, atoms_per_group
 
     def forward(self, node_embeddings: torch.Tensor, relations: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
         """Compute messages and indices for all relations.
@@ -196,6 +213,8 @@ class PredicateLinearMessages(MessageFunction):
     type gets its own linear layer from the concatenated argument embeddings to
     relation-position messages. No argument residual is added.
     """
+
+    supports_replay = True
 
     def __init__(self,
                  hparam_config: HyperparameterConfig,

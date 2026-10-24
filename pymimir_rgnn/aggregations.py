@@ -11,6 +11,8 @@ class MeanAggregation(AggregationFunction):
     neighboring nodes in the graph.
     """
 
+    supports_replay = True
+
     def __init__(self) -> None:
         """Initialize the mean aggregation function."""
         super().__init__()
@@ -42,6 +44,8 @@ class SumAggregation(AggregationFunction):
     to accumulate information from all neighbors.
     """
 
+    supports_replay = True
+
     def __init__(self) -> None:
         """Initialize the sum aggregation function."""
         super().__init__()
@@ -69,6 +73,8 @@ class HardMaximumAggregation(AggregationFunction):
     to each node. It emphasizes the strongest signals and can be useful for
     attention-like mechanisms or when only the most important information matters.
     """
+
+    supports_replay = True
 
     def __init__(self) -> None:
         """Initialize the hard maximum aggregation function."""
@@ -98,6 +104,8 @@ class SmoothMaximumAggregation(AggregationFunction):
     differentiable alternative to hard maximum that emphasizes the largest
     values while still considering other inputs.
     """
+
+    supports_replay = True
 
     def __init__(self) -> None:
         """Initialize the smooth maximum aggregation function."""

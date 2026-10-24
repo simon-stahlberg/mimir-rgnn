@@ -15,6 +15,8 @@ class MLPUpdates(UpdateFunction):
     a learnable way to combine the node's current state with incoming information.
     """
 
+    supports_replay = True
+
     def __init__(self, hparam_config: HyperparameterConfig):
         """Initialize the MLP update function.
 
@@ -43,6 +45,8 @@ class LinearUpdates(UpdateFunction):
     This update function computes new node embeddings from the concatenation of
     aggregated messages and current node embeddings using a single linear layer.
     """
+
+    supports_replay = True
 
     def __init__(self, hparam_config: HyperparameterConfig):
         """Initialize the linear update function.

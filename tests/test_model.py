@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Literal, cast
 from pymimir_rgnn import *
 from pymimir_rgnn.encoders import get_input_from_encoders
+import pymimir_rgnn.model as rgnn_model
 from pymimir_rgnn.model import MIN_REPLAYED_LAYERS, RelationalLayerStackModule
 
 
@@ -1259,12 +1260,36 @@ def test_sum_readout_sums_each_group():
     assert torch.allclose(readout(node_embeddings, node_sizes), readout._value(expected), atol=1e-6)
 
 
-def _q_value_model(domain: mm.Domain, num_layers: int, **config: Any) -> RelationalGraphNeuralNetwork:
+def _q_value_model(domain: mm.Domain, num_layers: int, aggregation: type = SumAggregation, messages: type = PredicateMLPMessages,
+                   updates: type = MLPUpdates, **config: Any) -> RelationalGraphNeuralNetwork:
     torch.manual_seed(0)
     hparam_config = HyperparameterConfig(domain=domain, num_layers=num_layers, embedding_size=8, **config)
     input_spec = (StateEncoder(), GroundActionsEncoder(), GoalEncoder())
-    module_config = ModuleConfig(SumAggregation(), PredicateMLPMessages(hparam_config, input_spec), MLPUpdates(hparam_config))
+    module_config = ModuleConfig(aggregation(), messages(hparam_config, input_spec), updates(hparam_config))
     return RelationalGraphNeuralNetwork(hparam_config, module_config, input_spec, [('q', ActionScalarDecoder(hparam_config))])
+
+
+def _eager_and_replayed_q_values(monkeypatch: pytest.MonkeyPatch, model: RelationalGraphNeuralNetwork,
+                                 inputs: list[tuple]) -> tuple[list[torch.Tensor], list[torch.Tensor], int]:
+    """The Q-values without gradients, run layer by layer and as far as possible replayed, and the number of
+    replays."""
+    replays = 0
+    replay_layers = RelationalLayerStackModule._replay_layers
+
+    def counting_replay_layers(self: RelationalLayerStackModule, *args: Any) -> torch.Tensor:
+        nonlocal replays
+        replays += 1
+        return replay_layers(self, *args)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(RelationalLayerStackModule, '_replay_layers', counting_replay_layers)
+        with torch.no_grad():
+            replayed = model.forward(inputs).readout('q')
+    with monkeypatch.context() as patch:
+        patch.setattr(rgnn_model, 'MIN_REPLAYED_LAYERS', model._hparam_config.num_layers + 1)
+        with torch.no_grad():
+            eager = model.forward(inputs).readout('q')
+    return eager, replayed, replays
 
 
 def _q_value_inputs(dom: str) -> tuple[mm.Domain, list[tuple]]:
@@ -1301,6 +1326,56 @@ def test_replayed_layers_give_the_outputs_of_running_every_layer(monkeypatch: py
     assert replays == 1
     for replayed_values, expected_values in zip(replayed, expected):
         assert torch.allclose(replayed_values, expected_values.detach(), atol=1e-5)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="replaying layers needs CUDA")
+@pytest.mark.parametrize("messages", [PredicateMLPMessages, PredicateLinearMessages])
+@pytest.mark.parametrize("aggregation", [SumAggregation, MeanAggregation, HardMaximumAggregation, SmoothMaximumAggregation])
+@pytest.mark.parametrize("updates", [MLPUpdates, LinearUpdates])
+def test_functions_that_support_replay_give_the_outputs_of_running_every_layer(monkeypatch: pytest.MonkeyPatch, messages: type,
+                                                                                aggregation: type, updates: type):
+    domain, inputs = _q_value_inputs('gripper')
+    model = _q_value_model(domain, MIN_REPLAYED_LAYERS, aggregation, messages, updates).to('cuda')
+    eager, replayed, replays = _eager_and_replayed_q_values(monkeypatch, model, inputs)
+    assert replays == 1
+    for replayed_values, eager_values in zip(replayed, eager):
+        assert torch.allclose(replayed_values, eager_values, atol=1e-5)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="replaying layers needs CUDA")
+@pytest.mark.parametrize("messages", [AttentionMessages, SparseMLPMessages, SenderOnlyMLPMessages])
+def test_functions_without_replay_support_run_every_layer(monkeypatch: pytest.MonkeyPatch, messages: type):
+    domain, inputs = _q_value_inputs('blocks')
+    if messages is SparseMLPMessages:
+        messages = lambda config, spec: SparseMLPMessages(config, spec, k=2)  # noqa: E731
+    model = _q_value_model(domain, MIN_REPLAYED_LAYERS, messages=messages).to('cuda').eval()
+    eager, replayed, replays = _eager_and_replayed_q_values(monkeypatch, model, inputs)
+    assert replays == 0
+    for replayed_values, eager_values in zip(replayed, eager):
+        assert torch.allclose(replayed_values, eager_values)
+
+
+class _SynchronizingMessages(PredicateMLPMessages):
+    """Claims to support replay, but synchronizes with the host, which a recording cannot contain."""
+    supports_replay = True
+
+    def forward(self, node_embeddings: torch.Tensor, relations: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+        if node_embeddings.sum().item() > float('inf'):
+            raise AssertionError("unreachable")
+        return super().forward(node_embeddings, relations)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="replaying layers needs CUDA")
+def test_a_failed_recording_reports_its_error_and_leaves_the_thread_usable():
+    domain, inputs = _q_value_inputs('blocks')
+    failing = _q_value_model(domain, MIN_REPLAYED_LAYERS, messages=_SynchronizingMessages).to('cuda')
+    with pytest.raises(RuntimeError, match="capturing"):
+        with torch.no_grad():
+            failing.forward(inputs).readout('q')
+    working = _q_value_model(domain, MIN_REPLAYED_LAYERS).to('cuda')
+    with torch.no_grad():
+        q_values = working.forward(inputs).readout('q')
+    assert all(torch.isfinite(values).all() for values in q_values)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="replaying layers needs CUDA")

@@ -134,6 +134,12 @@ class AggregationFunction(ABC, torch.nn.Module):
     the message passing phase of graph neural network computation.
     """
 
+    # Whether this function lets the message-passing layers be replayed from a CUDA graph of the first layer, which
+    # makes forward passes without gradients of deep networks several times faster. Opting in requires that forward
+    # runs the same operations in every layer, independent of the layer, never synchronizes with the host (no
+    # .item(), .cpu() or shapes that depend on values) and draws no random numbers.
+    supports_replay = False
+
     def __init__(self):
         """Initialize the aggregation function as a PyTorch module."""
         super().__init__()
@@ -159,6 +165,12 @@ class MessageFunction(ABC, torch.nn.Module):
     Message functions compute messages between nodes based on their relations
     during the message passing phase of graph neural network computation.
     """
+
+    # Whether this function lets the message-passing layers be replayed from a CUDA graph of the first layer, which
+    # makes forward passes without gradients of deep networks several times faster. Opting in requires that forward
+    # runs the same operations in every layer, independent of the layer, never synchronizes with the host (no
+    # .item(), .cpu() or shapes that depend on values) and draws no random numbers.
+    supports_replay = False
 
     def __init__(self):
         """Initialize the message function as a PyTorch module."""
@@ -220,6 +232,12 @@ class UpdateFunction(ABC, torch.nn.Module):
     Update functions compute new node embeddings based on the current embeddings
     and the aggregated messages received during message passing.
     """
+
+    # Whether this function lets the message-passing layers be replayed from a CUDA graph of the first layer, which
+    # makes forward passes without gradients of deep networks several times faster. Opting in requires that forward
+    # runs the same operations in every layer, independent of the layer, never synchronizes with the host (no
+    # .item(), .cpu() or shapes that depend on values) and draws no random numbers.
+    supports_replay = False
 
     def __init__(self):
         """Initialize the update function as a PyTorch module."""

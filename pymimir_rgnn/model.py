@@ -255,7 +255,8 @@ class RelationalLayerStackModule(nn.Module):
         """Whether the layers can be replayed from a CUDA graph of the first one.
 
         Backpropagation needs every layer's intermediate tensors, which each replay overwrites; hooks and quantization
-        records need each layer's tensors as well. Recording costs about as much as running two layers.
+        records need each layer's tensors as well. Recording costs about as much as running two layers. The message,
+        aggregation and update functions must support it, see `MessageFunction.supports_replay`.
         """
         return (
             not torch.is_grad_enabled()
@@ -264,6 +265,9 @@ class RelationalLayerStackModule(nn.Module):
             and not self._hooks
             and not self._config.ternarize_messages
             and not self._config.binarize_updates
+            and self._message.supports_replay
+            and self._relation_network._aggregation.supports_replay
+            and self._relation_network._update.supports_replay
         )
 
     def _replay_layers(self, input: EncodedTensors, node_embeddings: torch.Tensor) -> torch.Tensor:
@@ -289,16 +293,28 @@ class RelationalLayerStackModule(nn.Module):
         graph = torch.cuda.CUDAGraph()
         stream.wait_stream(torch.cuda.current_stream(embeddings.device))
         # A garbage collection during the recording can free objects whose CUDA calls invalidate it.
+        collecting_garbage = gc.isenabled()
         gc.disable()
         try:
             with torch.cuda.stream(stream):
-                graph.capture_begin(pool=replay.memory_pool)
-                # Recorded, not run: each replay computes one layer from `embeddings` back into `embeddings`.
-                updated_embeddings, _ = self._layer(0, input, embeddings)
-                embeddings.copy_(updated_embeddings)
+                # Only CUDA calls of this thread may invalidate the recording, not those of other threads.
+                graph.capture_begin(pool=replay.memory_pool, capture_error_mode='thread_local')
+                try:
+                    # Recorded, not run: each replay computes one layer from `embeddings` back into `embeddings`.
+                    updated_embeddings, _ = self._layer(0, input, embeddings)
+                    embeddings.copy_(updated_embeddings)
+                except BaseException:
+                    # A recording that is not ended leaves the stream recording, which breaks every later CUDA call of
+                    # the thread. Ending a failed recording fails as well; the layer's error is the one to report.
+                    try:
+                        graph.capture_end()
+                    except RuntimeError:
+                        pass
+                    raise
                 graph.capture_end()
         finally:
-            gc.enable()
+            if collecting_garbage:
+                gc.enable()
         torch.cuda.current_stream(embeddings.device).wait_stream(stream)
         # The memory pool is released once no recording uses it, after which PyTorch cannot record into it again.
         replay.latest_graph = graph
