@@ -66,13 +66,15 @@ def _expressive_predicate_relation_arity(predicate: mm.Predicate) -> int:
 def _relations_from_native_buffer(
     relation_buffer: RelationBuffer,
     custom_relations: dict[str, list[int]],
+    bookkeeping: list[list[int]],
     device: torch.device,
-) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
+) -> tuple[dict[str, torch.Tensor], torch.Tensor, list[torch.Tensor]]:
     """Create relation tensors while keeping native values packed.
 
     Native values cross the Python/Torch boundary once through ``frombuffer``
-    and, for non-CPU devices, through one packed device transfer.  Relations
-    without a custom collision are views into that packed device tensor.
+    and, together with the bookkeeping lists, through one packed device
+    transfer.  Relations without a custom collision and the bookkeeping
+    tensors are views into that packed device tensor.
     """
     relations = relations_to_tensors(custom_relations, device)
     descriptors = relation_buffer.descriptors
@@ -80,26 +82,24 @@ def _relations_from_native_buffer(
     # RelationBuffer validates that its descriptors cover this packed int32
     # storage contiguously when it is constructed.
     value_count = value_view.nbytes // 4
-
+    bookkeeping_values = [value for values in bookkeeping for value in values]
+    # Pinned memory lets the copy to an accelerator run without waiting for it.
+    host_values = torch.empty(
+        value_count + len(bookkeeping_values),
+        dtype=torch.int32,
+        pin_memory=device.type == 'cuda',
+    )
     if value_count > 0:
-        cpu_values = torch.frombuffer(
+        # torch.frombuffer rejects empty buffers.  Copying on the host lets the
+        # temporary CPU exporter be released as soon as this helper returns.
+        host_values[:value_count].copy_(torch.frombuffer(
             value_view,
             dtype=torch.int32,
             count=value_count,
             requires_grad=False,
-        )
-        # The synchronous copy lets the temporary CPU exporter be released as
-        # soon as this helper returns on accelerator paths.
-        device_values = cpu_values.to(device=device, non_blocking=False)
-    else:
-        # torch.frombuffer rejects empty buffers.  A single empty base still
-        # lets every nullary relation be represented by a view.
-        device_values = torch.empty(
-            0,
-            dtype=torch.int32,
-            device=device,
-            requires_grad=False,
-        )
+        ))
+    host_values[value_count:] = torch.tensor(bookkeeping_values, dtype=torch.int32)
+    device_values = host_values.to(device=device, non_blocking=True)
 
     for descriptor in descriptors:
         native_values = device_values.narrow(
@@ -118,7 +118,12 @@ def _relations_from_native_buffer(
                 (custom_values, native_values),
             )
 
-    return relations, device_values
+    bookkeeping_tensors = []
+    offset = value_count
+    for values in bookkeeping:
+        bookkeeping_tensors.append(device_values.narrow(0, offset, len(values)))
+        offset += len(values)
+    return relations, device_values.narrow(0, 0, value_count), bookkeeping_tensors
 
 
 class StateEncoder(Encoder):
@@ -566,22 +571,35 @@ def get_input_from_encoders(input: list[tuple], input_specification: tuple[Encod
     (
         encoding_tensors.flattened_relations,
         encoding_tensors._native_relation_values,
+        (
+            encoding_tensors.node_sizes,
+            encoding_tensors.object_indices,
+            encoding_tensors.object_sizes,
+            encoding_tensors.action_indices,
+            encoding_tensors.action_sizes,
+            encoding_tensors.virtual_indices,
+            encoding_tensors.virtual_sizes,
+            encoding_tensors.auxiliary_indices,
+            encoding_tensors.auxiliary_sizes,
+        ),
     ) = _relations_from_native_buffer(
         relation_buffer,
         encoding_lists.flattened_relations,
+        [
+            encoding_lists.node_sizes,
+            encoding_lists.object_indices,
+            encoding_lists.object_sizes,
+            encoding_lists.action_indices,
+            encoding_lists.action_sizes,
+            encoding_lists.virtual_indices,
+            encoding_lists.virtual_sizes,
+            encoding_lists.auxiliary_indices,
+            encoding_lists.auxiliary_sizes,
+        ],
         device,
     )
     encoding_tensors.node_count = encoding_lists.node_count
-    encoding_tensors.node_sizes = torch.tensor(encoding_lists.node_sizes, dtype=torch.int, device=device, requires_grad=False)
-    encoding_tensors.object_indices = torch.tensor(encoding_lists.object_indices, dtype=torch.int, device=device, requires_grad=False)
-    encoding_tensors.object_sizes = torch.tensor(encoding_lists.object_sizes, dtype=torch.int, device=device, requires_grad=False)
-    encoding_tensors.action_indices = torch.tensor(encoding_lists.action_indices, dtype=torch.int, device=device, requires_grad=False)
-    encoding_tensors.action_sizes = torch.tensor(encoding_lists.action_sizes, dtype=torch.int, device=device, requires_grad=False)
     encoding_tensors.action_counts = tuple(encoding_lists.action_sizes)
-    encoding_tensors.virtual_indices = torch.tensor(encoding_lists.virtual_indices, dtype=torch.int, device=device, requires_grad=False)
-    encoding_tensors.virtual_sizes = torch.tensor(encoding_lists.virtual_sizes, dtype=torch.int, device=device, requires_grad=False)
-    encoding_tensors.auxiliary_indices = torch.tensor(encoding_lists.auxiliary_indices, dtype=torch.int, device=device, requires_grad=False)
-    encoding_tensors.auxiliary_sizes = torch.tensor(encoding_lists.auxiliary_sizes, dtype=torch.int, device=device, requires_grad=False)
     return encoding_tensors
 
 

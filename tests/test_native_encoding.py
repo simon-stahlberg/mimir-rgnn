@@ -411,8 +411,8 @@ def test_nullary_broadcast_without_objects_skips_frombuffer(
     assert encoded.flattened_relations["relation_ready"].numel() == 0
     assert encoded._native_relation_values is not None
     assert encoded._native_relation_values.numel() == 0
-    assert encoded.flattened_relations["relation_ready"]._base is (
-        encoded._native_relation_values
+    assert encoded.flattened_relations["relation_ready"].untyped_storage().data_ptr() == (
+        encoded._native_relation_values.untyped_storage().data_ptr()
     )
 
 

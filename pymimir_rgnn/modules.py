@@ -202,7 +202,9 @@ class SumReadout(nn.Module):
         """
         if node_sizes.numel() == 1:
             return self._value(node_embeddings.sum(dim=0, keepdim=True))
-        cumsum_indices = node_sizes.cumsum(0) - 1
-        cumsum_states = node_embeddings.cumsum(0).index_select(0, cumsum_indices)
-        aggregated_embeddings = torch.cat((cumsum_states[0].view(1, -1), cumsum_states[1:] - cumsum_states[0:-1]))
-        return self._value(aggregated_embeddings)
+        # A sum per group rather than differences of a running sum: the scan over all rows is slow on large batches
+        # and the differences lose precision.
+        groups = torch.repeat_interleave(torch.arange(node_sizes.numel(), device=node_sizes.device), node_sizes,
+                                         output_size=node_embeddings.shape[0])
+        aggregated_embeddings = node_embeddings.new_zeros((node_sizes.numel(), node_embeddings.shape[1]))
+        return self._value(aggregated_embeddings.index_add(0, groups, node_embeddings))

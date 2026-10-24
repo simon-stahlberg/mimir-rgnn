@@ -5,6 +5,7 @@ import torch
 from pathlib import Path
 from typing import Literal, cast
 from pymimir_rgnn import *
+from pymimir_rgnn.encoders import get_input_from_encoders
 
 
 TEST_DIR = Path(__file__).parent
@@ -1201,3 +1202,57 @@ def test_invalid_hparam_combinations():
         HyperparameterConfig(domain=domain, message_hidden_size=0)
     with pytest.raises(ValueError):
         HyperparameterConfig(domain=domain, message_hidden_size=-1)
+
+
+def _reference_messages(message_function: PredicateMLPMessages, node_embeddings: torch.Tensor,
+                        relations: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+    """The messages computed one relation at a time with its own MLP, as (messages, indices) sorted by index."""
+    messages = []
+    indices = []
+    for relation_name, argument_indices in relations.items():
+        if argument_indices.numel() > 0:
+            mlp = message_function._relation_mlps[relation_name]
+            arguments = node_embeddings.index_select(0, argument_indices).view(-1, mlp.input_size)
+            messages.append((arguments + mlp(arguments)).view(-1, node_embeddings.shape[1]))
+            indices.append(argument_indices)
+    return torch.cat(messages), torch.cat(indices)
+
+
+@pytest.mark.parametrize("dom", ['blocks', 'gripper'])
+def test_predicate_mlp_messages_match_one_mlp_per_relation(dom: str):
+    domain = mm.Domain.from_file(DATA_DIR / dom / 'domain.pddl')
+    problem = mm.Problem.from_file(domain, DATA_DIR / dom / 'problem.pddl')
+    hparam_config = HyperparameterConfig(domain=domain, num_layers=1, embedding_size=8)
+    input_spec = (StateEncoder(), GroundActionsEncoder(), GoalEncoder())
+    message_function = PredicateMLPMessages(hparam_config, input_spec)
+    states = [problem.initial_state] + [successor for _, successor in problem.initial_state.successor_states()]
+    encoding = get_input_from_encoders([(state, list(state.applicable_actions()), problem.goal) for state in states],
+                                       input_spec, torch.device('cpu'))
+    relations = encoding.flattened_relations
+    torch.manual_seed(0)
+    node_embeddings = torch.randn(encoding.node_count, 8, requires_grad=True)
+    messages, indices = message_function.forward(node_embeddings, relations)
+    expected_messages, expected_indices = _reference_messages(message_function, node_embeddings, relations)
+    # The relations may come in another order; the messages per receiving node do not.
+    sums = torch.zeros_like(node_embeddings).index_add(0, indices, messages)
+    expected_sums = torch.zeros_like(node_embeddings).index_add(0, expected_indices, expected_messages)
+    assert torch.equal(indices.sort().values, expected_indices.sort().values)
+    assert torch.allclose(sums, expected_sums, atol=1e-5)
+    # Relations without atoms in the batch leave their MLPs unused.
+    inputs = [node_embeddings, *message_function.parameters()]
+    gradients = torch.autograd.grad(sums.square().sum(), inputs, allow_unused=True)
+    expected_gradients = torch.autograd.grad(expected_sums.square().sum(), inputs, allow_unused=True)
+    for gradient, expected_gradient in zip(gradients, expected_gradients):
+        assert (gradient is None) == (expected_gradient is None)
+        if gradient is not None:
+            assert torch.allclose(gradient, expected_gradient, atol=1e-4)
+
+
+def test_sum_readout_sums_each_group():
+    torch.manual_seed(0)
+    readout = SumReadout(4, 3)
+    node_embeddings = torch.randn(9, 4)
+    node_sizes = torch.tensor([2, 0, 4, 3])
+    expected = torch.stack([node_embeddings[0:2].sum(0), torch.zeros(4), node_embeddings[2:6].sum(0),
+                            node_embeddings[6:9].sum(0)])
+    assert torch.allclose(readout(node_embeddings, node_sizes), readout._value(expected), atol=1e-6)

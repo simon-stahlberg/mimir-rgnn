@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 
 from abc import abstractmethod
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from .bases import Encoder, MessageFunction
@@ -10,12 +11,30 @@ from .encoders import get_relations_from_encoders
 from .modules import MLP, SparseMLP
 from .utils import ternarize
 
+@dataclass
+class _RelationGroup:
+    """Relations of one arity whose MLPs are computed together, each padded to the group's largest relation."""
+    num_relations: int
+    width: int
+    input_size: int
+    padded_indices: torch.Tensor
+    rows: torch.Tensor
+    inner_weight: torch.Tensor
+    inner_bias: torch.Tensor
+    outer_weight: torch.Tensor
+    outer_bias: torch.Tensor
+
+
 class PredicateMLPMessages(MessageFunction):
     """Message function using separate MLPs for each predicate relation.
 
     This message function creates a separate multi-layer perceptron (MLP) for
     each relation type in the graph. This allows the model to learn different
     message computation strategies for different types of relations.
+
+    Relations of the same arity are computed together with batched matrix
+    products, which launches a few kernels per arity instead of several per
+    relation.
     """
 
     def __init__(self,
@@ -41,52 +60,133 @@ class PredicateMLPMessages(MessageFunction):
                     output_size,
                     hidden_size=hparam_config.message_hidden_size,
                 )
+        self._grouped: tuple[list[_RelationGroup], torch.Tensor] | None = None
 
-    def _forward_relation(self, relation_name: str, argument_embeddings: torch.Tensor) -> torch.Tensor:
-        """Compute messages for a specific relation using its dedicated MLP.
+    def setup(self, relations: dict[str, torch.Tensor]) -> None:
+        """Group the relations once for all layers.
 
         Args:
-            relation_name: The name of the relation for which to compute messages.
-            argument_embeddings: The embeddings of the arguments involved in the relation.
+            relations: Dictionary mapping relation names to their argument indices.
+        """
+        self._grouped = self._group_relations(relations)
+
+    def _group_relations(self, relations: dict[str, torch.Tensor]) -> tuple[list[_RelationGroup], torch.Tensor]:
+        """Group the nonempty relations by arity and stack their MLPs' parameters.
+
+        Args:
+            relations: Dictionary mapping relation names to their argument indices.
 
         Returns:
-            The computed messages with the same shape as argument_embeddings.
+            The groups, and the receiving node of each message in the order the groups produce them.
 
         Raises:
-            ValueError: If no MLP is found for the given relation name.
+            ValueError: If no MLP is found for a nonempty relation.
         """
-        if relation_name not in self._relation_mlps:
-            raise ValueError(f"No MLP found for relation '{relation_name}'")
-        relation_module: MLP = self._relation_mlps[relation_name]  # type: ignore
-        messages = relation_module(argument_embeddings.view(-1, relation_module.input_size))
-        return messages
+        by_input_size: dict[int, list[tuple[str, torch.Tensor]]] = {}
+        for relation_name, argument_indices in relations.items():
+            if argument_indices.numel() > 0:
+                if relation_name not in self._relation_mlps:
+                    raise ValueError(f"No MLP found for relation '{relation_name}'")
+                relation_module: MLP = self._relation_mlps[relation_name]  # type: ignore
+                by_input_size.setdefault(relation_module.input_size, []).append((relation_name, argument_indices))
+        groups: list[tuple[int, list[tuple[str, torch.Tensor]]]] = []
+        for input_size, members in by_input_size.items():
+            arity = input_size // self._embedding_size
+            # Largest relations first, split so that padding adds at most half to the rows of a group.
+            members.sort(key=lambda member: member[1].numel(), reverse=True)
+            group: list[tuple[str, torch.Tensor]] = []
+            group_atoms = 0
+            for member in members:
+                num_atoms = member[1].numel() // arity
+                if group and 2 * (len(group) + 1) * (group[0][1].numel() // arity) > 3 * (group_atoms + num_atoms):
+                    groups.append((input_size, group))
+                    group, group_atoms = [], 0
+                group.append(member)
+                group_atoms += num_atoms
+            groups.append((input_size, group))
+        # The messages are in the order of the groups, and within a group in the order of its relations; a group's
+        # argument indices are a slice of the output indices.
+        output_indices = torch.cat([argument_indices for _, members in groups for _, argument_indices in members])
+        device = output_indices.device
+        # The padded row of each atom, for all groups at once: relation r of a group starts at row r * width of the
+        # group's padded rows, rather than after the atoms before it.
+        shifts: list[int] = []
+        counts: list[int] = []
+        atoms_per_group: list[int] = []
+        total_atoms = 0
+        for input_size, members in groups:
+            arity = input_size // self._embedding_size
+            width = members[0][1].numel() // arity
+            first_atom = 0
+            for row, (_, argument_indices) in enumerate(members):
+                shifts.append(row * width - first_atom - total_atoms)
+                counts.append(argument_indices.numel() // arity)
+                first_atom += counts[-1]
+            atoms_per_group.append(first_atom)
+            total_atoms += first_atom
+        host = torch.tensor(shifts + counts, dtype=torch.long)
+        if device.type == 'cuda':
+            # One copy from pinned memory, which does not wait for the device.
+            host = host.pin_memory()
+        host = host.to(device, non_blocking=True)
+        rows = torch.arange(total_atoms, device=device) \
+            + torch.repeat_interleave(host[:len(shifts)], host[len(shifts):], output_size=total_atoms)
+        relation_groups: list[_RelationGroup] = []
+        first_atom = 0
+        first_index = 0
+        for (input_size, members), num_atoms in zip(groups, atoms_per_group):
+            arity = input_size // self._embedding_size
+            width = members[0][1].numel() // arity
+            group_rows = rows[first_atom:first_atom + num_atoms]
+            argument_indices = output_indices[first_index:first_index + num_atoms * arity].view(-1, arity)
+            # Padding refers to node 0; the padded rows are computed but never selected.
+            padded_indices = output_indices.new_zeros((len(members) * width, arity)).index_copy_(0, group_rows, argument_indices)
+            mlps: list[MLP] = [self._relation_mlps[relation_name] for relation_name, _ in members]  # type: ignore
+            relation_groups.append(_RelationGroup(
+                num_relations=len(members),
+                width=width,
+                input_size=input_size,
+                padded_indices=padded_indices.view(-1),
+                rows=group_rows,
+                inner_weight=torch.stack([mlp._inner.weight for mlp in mlps]).transpose(1, 2),
+                inner_bias=torch.stack([mlp._inner.bias for mlp in mlps]).unsqueeze(1),
+                outer_weight=torch.stack([mlp._outer.weight for mlp in mlps]).transpose(1, 2),
+                outer_bias=torch.stack([mlp._outer.bias for mlp in mlps]).unsqueeze(1),
+            ))
+            first_atom += num_atoms
+            first_index += num_atoms * arity
+        return relation_groups, output_indices
 
     def forward(self, node_embeddings: torch.Tensor, relations: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
         """Compute messages and indices for all relations.
 
         Args:
             node_embeddings: The current node embeddings.
-            relations: Dictionary mapping relation names to their argument indices.
+            relations: Dictionary mapping relation names to their argument indices; if `setup` was called, the same
+                as given to it.
 
         Returns:
             Tuple of (messages, indices) for aggregation.
         """
+        groups, output_indices = self._grouped if self._grouped is not None else self._group_relations(relations)
         output_messages_list: list[torch.Tensor] = []
-        output_indices_list: list[torch.Tensor] = []
-        for relation_name, argument_indices in relations.items():
-            if argument_indices.numel() > 0:
-                argument_embeddings = torch.index_select(node_embeddings, 0, argument_indices)
-                argument_messages = self._forward_relation(relation_name, argument_embeddings)
-                output_messages = (argument_embeddings.view_as(argument_messages) + argument_messages).view(-1, self._embedding_size)
-                output_messages_list.append(output_messages)
-                output_indices_list.append(argument_indices)
+        for group in groups:
+            argument_embeddings = node_embeddings.index_select(0, group.padded_indices)
+            argument_embeddings = argument_embeddings.view(group.num_relations, group.width, group.input_size)
+            hidden = nn.functional.mish(torch.baddbmm(group.inner_bias, argument_embeddings, group.inner_weight))
+            argument_messages = torch.baddbmm(group.outer_bias, hidden, group.outer_weight)
+            output_messages = (argument_embeddings + argument_messages).view(-1, group.input_size)
+            output_messages_list.append(output_messages.index_select(0, group.rows).view(-1, self._embedding_size))
         output_messages = torch.cat(output_messages_list, 0)
-        output_indices = torch.cat(output_indices_list, 0)
         if self._ternarize_messages:
             output_message_logits = output_messages
             output_messages = ternarize(output_message_logits)
             self._record_ternary_messages(output_message_logits, output_messages)
         return output_messages, output_indices
+
+    def cleanup(self) -> None:
+        """Release the groups of the latest `setup`."""
+        self._grouped = None
 
 
 class PredicateLinearMessages(MessageFunction):
