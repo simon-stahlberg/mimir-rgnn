@@ -3,9 +3,10 @@ import pytest
 import torch
 
 from pathlib import Path
-from typing import Literal, cast
+from typing import Any, Literal, cast
 from pymimir_rgnn import *
 from pymimir_rgnn.encoders import get_input_from_encoders
+from pymimir_rgnn.model import MIN_REPLAYED_LAYERS, RelationalLayerStackModule
 
 
 TEST_DIR = Path(__file__).parent
@@ -1256,3 +1257,80 @@ def test_sum_readout_sums_each_group():
     expected = torch.stack([node_embeddings[0:2].sum(0), torch.zeros(4), node_embeddings[2:6].sum(0),
                             node_embeddings[6:9].sum(0)])
     assert torch.allclose(readout(node_embeddings, node_sizes), readout._value(expected), atol=1e-6)
+
+
+def _q_value_model(domain: mm.Domain, num_layers: int, **config: Any) -> RelationalGraphNeuralNetwork:
+    torch.manual_seed(0)
+    hparam_config = HyperparameterConfig(domain=domain, num_layers=num_layers, embedding_size=8, **config)
+    input_spec = (StateEncoder(), GroundActionsEncoder(), GoalEncoder())
+    module_config = ModuleConfig(SumAggregation(), PredicateMLPMessages(hparam_config, input_spec), MLPUpdates(hparam_config))
+    return RelationalGraphNeuralNetwork(hparam_config, module_config, input_spec, [('q', ActionScalarDecoder(hparam_config))])
+
+
+def _q_value_inputs(dom: str) -> tuple[mm.Domain, list[tuple]]:
+    domain = mm.Domain.from_file(DATA_DIR / dom / 'domain.pddl')
+    problem = mm.Problem.from_file(domain, DATA_DIR / dom / 'problem.pddl')
+    states = [problem.initial_state] + [successor for _, successor in problem.initial_state.successor_states()]
+    return domain, [(state, list(state.applicable_actions()), problem.goal) for state in states]
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="replaying layers needs CUDA")
+@pytest.mark.parametrize("dom", ['blocks', 'gripper'])
+@pytest.mark.parametrize("config", [
+    {},
+    {'global_readout': False},
+    {'normalize_updates': False, 'residual_updates': True},
+    {'channelwise_normalization': True},
+])
+def test_replayed_layers_give_the_outputs_of_running_every_layer(monkeypatch: pytest.MonkeyPatch, dom: str, config: dict[str, Any]):
+    domain, inputs = _q_value_inputs(dom)
+    model = _q_value_model(domain, MIN_REPLAYED_LAYERS + 2, **config).to('cuda')
+    replays = 0
+    replay_layers = RelationalLayerStackModule._replay_layers
+
+    def counting_replay_layers(self: RelationalLayerStackModule, input: Any, node_embeddings: torch.Tensor) -> torch.Tensor:
+        nonlocal replays
+        replays += 1
+        return replay_layers(self, input, node_embeddings)
+
+    monkeypatch.setattr(RelationalLayerStackModule, '_replay_layers', counting_replay_layers)
+    # The first call of the model replays, before any layer ran without a recording.
+    with torch.no_grad():
+        replayed = model.forward(inputs).readout('q')
+    expected = model.forward(inputs).readout('q')
+    assert replays == 1
+    for replayed_values, expected_values in zip(replayed, expected):
+        assert torch.allclose(replayed_values, expected_values.detach(), atol=1e-5)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="replaying layers needs CUDA")
+def test_layers_run_one_by_one_with_hooks_or_few_layers(monkeypatch: pytest.MonkeyPatch):
+    domain, inputs = _q_value_inputs('blocks')
+
+    def no_replay(self: RelationalLayerStackModule, input: Any, node_embeddings: torch.Tensor) -> torch.Tensor:
+        raise AssertionError("layers must not be replayed")
+
+    monkeypatch.setattr(RelationalLayerStackModule, '_replay_layers', no_replay)
+    model = _q_value_model(domain, MIN_REPLAYED_LAYERS + 2).to('cuda')
+    layers: list[int] = []
+    model.add_hook(lambda state: layers.append(state.get_layer_index()))
+    with torch.no_grad():
+        model.forward(inputs).readout('q')
+    assert len(layers) == MIN_REPLAYED_LAYERS + 2
+    shallow_model = _q_value_model(domain, MIN_REPLAYED_LAYERS - 1).to('cuda')
+    with torch.no_grad():
+        shallow_model.forward(inputs).readout('q')
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="replaying layers needs CUDA")
+def test_replaying_layers_reuses_the_memory_of_earlier_recordings():
+    domain, inputs = _q_value_inputs('gripper')
+    model = _q_value_model(domain, MIN_REPLAYED_LAYERS + 2).to('cuda')
+    with torch.no_grad():
+        for count in range(1, len(inputs) + 1):
+            model.forward(inputs[:count]).readout('q')
+        reserved = torch.cuda.memory_reserved()
+        for _ in range(3):
+            for count in range(1, len(inputs) + 1):
+                model.forward(inputs[:count]).readout('q')
+    assert torch.cuda.memory_reserved() == reserved

@@ -1,7 +1,9 @@
+import gc
+import threading
 import torch
 import torch.nn as nn
 
-from dataclasses import fields
+from dataclasses import dataclass, fields
 from pathlib import Path
 import pymimir as mm
 from typing import Any, Callable, Union
@@ -13,6 +15,21 @@ from .encoders import EncodedTensors, get_input_from_encoders
 from .modules import MLP, ChannelwiseAffine, SumReadout
 from .utils import binarize
 
+# Replaying the layers from a CUDA graph pays for recording it from this many layers on.
+MIN_REPLAYED_LAYERS = 4
+
+
+@dataclass
+class _ReplayResources:
+    """What recordings of layers share on a device in a thread; kept outside the modules, which then stay picklable."""
+    stream: torch.cuda.Stream
+    # Every recording allocates from this pool: a recording's own pool would stay reserved after it is discarded.
+    memory_pool: Any
+    latest_graph: torch.cuda.CUDAGraph | None = None
+
+
+# Per thread, the _ReplayResources of each device.
+_replay_resources = threading.local()
 
 class ForwardState:
     """Container for forward pass state and readout functions.
@@ -173,52 +190,121 @@ class RelationalLayerStackModule(nn.Module):
         try:
             self._latest_quantization_records = ()
             self._latest_layer_quantization_records = ()
+            if self._can_replay_layers(node_embeddings):
+                return self._replay_layers(input, node_embeddings)
             for layer_index in range(self._config.num_layers):
-                self._message.begin_quantization_recording(layer_index)
-                updates = self._relation_network(node_embeddings, input.flattened_relations)
-                layer_records = list(self._message.quantization_records())
-
-                if self._config.normalize_updates:
-                    updates = self._update_normalization(updates)
-                if self._config.global_readout:
-                    global_embeddings = self._global_readout(node_embeddings, input.node_sizes)
-                    per_node_global_embeddings = global_embeddings.repeat_interleave(
-                        input.node_sizes,
-                        dim=0,
-                        output_size=node_embeddings.shape[0],
-                    )
-                    global_inputs = torch.cat((node_embeddings, per_node_global_embeddings), dim=1)
-                    global_updates = self._global_update(global_inputs)
-                    if self._config.normalize_updates:
-                        global_updates = self._update_normalization(global_updates)
-                    updates = global_updates + updates
-
-                if self._config.binarize_updates:
-                    update_logits = updates
-                    updates = binarize(update_logits)
-                    layer_records.append(
-                        QuantizationRecord(
-                            kind="binary_update",
-                            layer_index=layer_index,
-                            logits=update_logits,
-                            thresholds=(0.0,),
-                            values=updates,
-                        )
-                    )
-
-                if self._config.residual_updates:
-                    node_embeddings = node_embeddings + updates
-                elif self._config.or_residual_updates:
-                    node_embeddings = torch.maximum(node_embeddings, updates)
-                else:
-                    node_embeddings = updates
-
+                node_embeddings, layer_records = self._layer(layer_index, input, node_embeddings)
                 self._latest_layer_quantization_records = tuple(layer_records)
                 self._latest_quantization_records += self._latest_layer_quantization_records
                 self._notify_hooks(layer_index, node_embeddings)
             return node_embeddings
         finally:
             self._message.cleanup()
+
+    def _layer(self, layer_index: int, input: EncodedTensors,
+               node_embeddings: torch.Tensor) -> tuple[torch.Tensor, list[QuantizationRecord]]:
+        """Run one layer of message passing.
+
+        Args:
+            layer_index: The index of the layer, for the quantization records.
+            input: The encoded graph input containing relations and node information.
+            node_embeddings: The node embeddings before the layer.
+
+        Returns:
+            The node embeddings after the layer, and the layer's quantization records.
+        """
+        self._message.begin_quantization_recording(layer_index)
+        updates = self._relation_network(node_embeddings, input.flattened_relations)
+        layer_records = list(self._message.quantization_records())
+
+        if self._config.normalize_updates:
+            updates = self._update_normalization(updates)
+        if self._config.global_readout:
+            global_embeddings = self._global_readout(node_embeddings, input.node_sizes)
+            per_node_global_embeddings = global_embeddings.repeat_interleave(
+                input.node_sizes,
+                dim=0,
+                output_size=node_embeddings.shape[0],
+            )
+            global_inputs = torch.cat((node_embeddings, per_node_global_embeddings), dim=1)
+            global_updates = self._global_update(global_inputs)
+            if self._config.normalize_updates:
+                global_updates = self._update_normalization(global_updates)
+            updates = global_updates + updates
+
+        if self._config.binarize_updates:
+            update_logits = updates
+            updates = binarize(update_logits)
+            layer_records.append(
+                QuantizationRecord(
+                    kind="binary_update",
+                    layer_index=layer_index,
+                    logits=update_logits,
+                    thresholds=(0.0,),
+                    values=updates,
+                )
+            )
+
+        if self._config.residual_updates:
+            return node_embeddings + updates, layer_records
+        if self._config.or_residual_updates:
+            return torch.maximum(node_embeddings, updates), layer_records
+        return updates, layer_records
+
+    def _can_replay_layers(self, node_embeddings: torch.Tensor) -> bool:
+        """Whether the layers can be replayed from a CUDA graph of the first one.
+
+        Backpropagation needs every layer's intermediate tensors, which each replay overwrites; hooks and quantization
+        records need each layer's tensors as well. Recording costs about as much as running two layers.
+        """
+        return (
+            not torch.is_grad_enabled()
+            and node_embeddings.is_cuda
+            and self._config.num_layers >= MIN_REPLAYED_LAYERS
+            and not self._hooks
+            and not self._config.ternarize_messages
+            and not self._config.binarize_updates
+        )
+
+    def _replay_layers(self, input: EncodedTensors, node_embeddings: torch.Tensor) -> torch.Tensor:
+        """Record the first layer as a CUDA graph and replay it for every layer.
+
+        All layers have the same operations on the same shapes, so one recording serves them all; it is not kept,
+        as the next input has other shapes.
+        """
+        embeddings = node_embeddings.clone()
+        if not hasattr(_replay_resources, 'by_device'):
+            _replay_resources.by_device = {}
+        resources: dict[torch.device, _ReplayResources] = _replay_resources.by_device
+        if embeddings.device not in resources:
+            stream = torch.cuda.Stream(embeddings.device)
+            # Libraries such as cuBLAS initialize on their first use in a thread and stream, which a recording cannot
+            # contain.
+            stream.wait_stream(torch.cuda.current_stream(embeddings.device))
+            with torch.cuda.stream(stream):
+                self._layer(0, input, embeddings)
+            resources[embeddings.device] = _ReplayResources(stream, torch.cuda.graph_pool_handle())
+        replay = resources[embeddings.device]
+        stream = replay.stream
+        graph = torch.cuda.CUDAGraph()
+        stream.wait_stream(torch.cuda.current_stream(embeddings.device))
+        # A garbage collection during the recording can free objects whose CUDA calls invalidate it.
+        gc.disable()
+        try:
+            with torch.cuda.stream(stream):
+                graph.capture_begin(pool=replay.memory_pool)
+                # Recorded, not run: each replay computes one layer from `embeddings` back into `embeddings`.
+                updated_embeddings, _ = self._layer(0, input, embeddings)
+                embeddings.copy_(updated_embeddings)
+                graph.capture_end()
+        finally:
+            gc.enable()
+        torch.cuda.current_stream(embeddings.device).wait_stream(stream)
+        # The memory pool is released once no recording uses it, after which PyTorch cannot record into it again.
+        replay.latest_graph = graph
+        for _ in range(self._config.num_layers):
+            graph.replay()
+        return embeddings
 
 
 class RelationalGraphNeuralNetwork(nn.Module):
