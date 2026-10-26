@@ -165,20 +165,34 @@ Available in the `ModuleConfig`:
 
 ### Replayed Layers
 
-On CUDA, a forward pass without gradients of a network with at least four
-layers records its first message-passing layer as a CUDA graph and replays it
-for every layer, which is several times faster for deep networks. The outputs
-are those of running every layer. This applies when the message, aggregation
-and update functions all set `supports_replay = True`, no hooks are
-registered, and messages and updates are not quantized; otherwise every layer
-runs as usual.
+On CUDA, a forward pass of a network with at least four layers records its
+first message-passing layer as a CUDA graph and replays it for every layer,
+which is several times faster for deep networks. The outputs are those of
+running every layer. This applies when the message, aggregation and update
+functions all set `supports_replay = True`, no hooks are registered, and
+messages and updates are not quantized; otherwise every layer runs as usual.
+
+With gradients, backpropagating through a layer is recorded as well. The
+backward pass recomputes each layer from its input, as activation
+checkpointing does, so training keeps only the node embeddings of each layer
+rather than all intermediate tensors: memory drops substantially, and a step
+is faster unless the layers are large enough to keep the GPU busy, where the
+recomputation costs more than the recording saves. Every forward pass is
+recorded anew, so gradients of separate forward and backward passes
+accumulate as usual, but each forward pass supports only one backward pass:
+a second one with `retain_graph=True`, or differentiating twice with
+`create_graph=True`, needs `pymimir_rgnn.model.REPLAY_TRAINING = False`. A
+layer must read the same tensors with and without gradients, and its backward
+pass must not synchronize with the host; if not, training runs every layer, with
+a warning.
 
 `PredicateMLPMessages`, `PredicateLinearMessages`, all aggregation functions,
 `MLPUpdates` and `LinearUpdates` support replay. A custom function may set
 `supports_replay = True` if its `forward` runs the same operations in every
 layer, independent of the layer, never synchronizes with the host (no
 `.item()`, no `.cpu()`, no indexing with Python lists, no shapes that depend
-on tensor values), and draws no random numbers. A recording that synchronizes
+on tensor values), neither does its backward pass, and draws no random
+numbers. A recording that synchronizes
 fails with an error; one that depends on the layer would silently repeat the
 first layer's behavior.
 

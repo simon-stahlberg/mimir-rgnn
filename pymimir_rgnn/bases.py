@@ -135,9 +135,11 @@ class AggregationFunction(ABC, torch.nn.Module):
     """
 
     # Whether this function lets the message-passing layers be replayed from a CUDA graph of the first layer, which
-    # makes forward passes without gradients of deep networks several times faster. Opting in requires that forward
-    # runs the same operations in every layer, independent of the layer, never synchronizes with the host (no
-    # .item(), .cpu() or shapes that depend on values) and draws no random numbers.
+    # makes forward and backward passes of deep networks several times faster. Opting in requires that forward runs
+    # the same operations in every layer, independent of the layer, reads the same tensors with and without gradients,
+    # never synchronizes with the host (no .item(), .cpu() or shapes that depend on values), neither does its backward
+    # pass, and draws no random numbers. A backward pass that cannot be recorded makes training run every layer, with
+    # a warning.
     supports_replay = False
 
     def __init__(self):
@@ -167,9 +169,11 @@ class MessageFunction(ABC, torch.nn.Module):
     """
 
     # Whether this function lets the message-passing layers be replayed from a CUDA graph of the first layer, which
-    # makes forward passes without gradients of deep networks several times faster. Opting in requires that forward
-    # runs the same operations in every layer, independent of the layer, never synchronizes with the host (no
-    # .item(), .cpu() or shapes that depend on values) and draws no random numbers.
+    # makes forward and backward passes of deep networks several times faster. Opting in requires that forward runs
+    # the same operations in every layer, independent of the layer, reads the same tensors with and without gradients,
+    # never synchronizes with the host (no .item(), .cpu() or shapes that depend on values), neither does its backward
+    # pass, and draws no random numbers. A backward pass that cannot be recorded makes training run every layer, with
+    # a warning.
     supports_replay = False
 
     def __init__(self):
@@ -234,9 +238,11 @@ class UpdateFunction(ABC, torch.nn.Module):
     """
 
     # Whether this function lets the message-passing layers be replayed from a CUDA graph of the first layer, which
-    # makes forward passes without gradients of deep networks several times faster. Opting in requires that forward
-    # runs the same operations in every layer, independent of the layer, never synchronizes with the host (no
-    # .item(), .cpu() or shapes that depend on values) and draws no random numbers.
+    # makes forward and backward passes of deep networks several times faster. Opting in requires that forward runs
+    # the same operations in every layer, independent of the layer, reads the same tensors with and without gradients,
+    # never synchronizes with the host (no .item(), .cpu() or shapes that depend on values), neither does its backward
+    # pass, and draws no random numbers. A backward pass that cannot be recorded makes training run every layer, with
+    # a warning.
     supports_replay = False
 
     def __init__(self):

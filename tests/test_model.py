@@ -1,7 +1,11 @@
+import gc
 import pymimir as mm
 import pytest
+import threading
 import torch
+import warnings
 
+from collections import OrderedDict, defaultdict, namedtuple
 from pathlib import Path
 from typing import Any, Literal, cast
 from pymimir_rgnn import *
@@ -1261,12 +1265,13 @@ def test_sum_readout_sums_each_group():
 
 
 def _q_value_model(domain: mm.Domain, num_layers: int, aggregation: type = SumAggregation, messages: type = PredicateMLPMessages,
-                   updates: type = MLPUpdates, **config: Any) -> RelationalGraphNeuralNetwork:
+                   updates: type = MLPUpdates, model_type: type = RelationalGraphNeuralNetwork,
+                   **config: Any) -> RelationalGraphNeuralNetwork:
     torch.manual_seed(0)
     hparam_config = HyperparameterConfig(domain=domain, num_layers=num_layers, embedding_size=8, **config)
     input_spec = (StateEncoder(), GroundActionsEncoder(), GoalEncoder())
     module_config = ModuleConfig(aggregation(), messages(hparam_config, input_spec), updates(hparam_config))
-    return RelationalGraphNeuralNetwork(hparam_config, module_config, input_spec, [('q', ActionScalarDecoder(hparam_config))])
+    return model_type(hparam_config, module_config, input_spec, [('q', ActionScalarDecoder(hparam_config))])
 
 
 def _eager_and_replayed_q_values(monkeypatch: pytest.MonkeyPatch, model: RelationalGraphNeuralNetwork,
@@ -1322,10 +1327,12 @@ def test_replayed_layers_give_the_outputs_of_running_every_layer(monkeypatch: py
     # The first call of the model replays, before any layer ran without a recording.
     with torch.no_grad():
         replayed = model.forward(inputs).readout('q')
-    expected = model.forward(inputs).readout('q')
+    monkeypatch.setattr(rgnn_model, 'MIN_REPLAYED_LAYERS', model._hparam_config.num_layers + 1)
+    with torch.no_grad():
+        expected = model.forward(inputs).readout('q')
     assert replays == 1
     for replayed_values, expected_values in zip(replayed, expected):
-        assert torch.allclose(replayed_values, expected_values.detach(), atol=1e-5)
+        assert torch.allclose(replayed_values, expected_values, atol=1e-5)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="replaying layers needs CUDA")
@@ -1409,3 +1416,321 @@ def test_replaying_layers_reuses_the_memory_of_earlier_recordings():
             for count in range(1, len(inputs) + 1):
                 model.forward(inputs[:count]).readout('q')
     assert torch.cuda.memory_reserved() == reserved
+
+
+def _loss_and_gradients(model: RelationalGraphNeuralNetwork, *batches: list[tuple]) -> tuple[torch.Tensor, list[torch.Tensor | None]]:
+    """A loss of the Q-values of the batches, each from a forward pass of its own, and the gradients of the parameters."""
+    model.zero_grad(set_to_none=True)
+    loss = sum(values.square().sum() for batch in batches for values in model.forward(batch).readout('q'))
+    assert isinstance(loss, torch.Tensor)
+    loss.backward()
+    return loss.detach(), [parameter.grad for parameter in model.parameters()]
+
+
+def _eager_and_recorded_gradients(monkeypatch: pytest.MonkeyPatch, model: RelationalGraphNeuralNetwork, *batches: list[tuple]
+                                  ) -> tuple[tuple[torch.Tensor, list[torch.Tensor | None]],
+                                             tuple[torch.Tensor, list[torch.Tensor | None]], int]:
+    """The loss and gradients running every layer and as far as possible from training recordings, and the number of
+    recordings."""
+    recordings = 0
+
+    class CountingRecording(rgnn_model._TrainingRecording):
+        def __init__(self, *args: Any):
+            nonlocal recordings
+            recordings += 1
+            super().__init__(*args)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(rgnn_model, '_TrainingRecording', CountingRecording)
+        recorded = _loss_and_gradients(model, *batches)
+    with monkeypatch.context() as patch:
+        patch.setattr(rgnn_model, 'REPLAY_TRAINING', False)
+        eager = _loss_and_gradients(model, *batches)
+    return eager, recorded, recordings
+
+
+def _assert_same_gradients(eager: tuple[torch.Tensor, list[torch.Tensor | None]],
+                           recorded: tuple[torch.Tensor, list[torch.Tensor | None]]) -> None:
+    assert torch.allclose(recorded[0], eager[0], rtol=1e-5)
+    for recorded_gradient, eager_gradient in zip(recorded[1], eager[1]):
+        assert (recorded_gradient is None) == (eager_gradient is None)
+        if eager_gradient is not None:
+            # Relative to the scale of the gradient: the atomic additions of index_add_ make even two runs of every
+            # layer differ slightly.
+            assert (recorded_gradient - eager_gradient).abs().max() <= 1e-4 * eager_gradient.abs().max() + 1e-6
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="replaying layers needs CUDA")
+@pytest.mark.parametrize("messages", [PredicateMLPMessages, PredicateLinearMessages])
+@pytest.mark.parametrize("aggregation", [SumAggregation, MeanAggregation, HardMaximumAggregation, SmoothMaximumAggregation])
+@pytest.mark.parametrize("updates", [MLPUpdates, LinearUpdates])
+def test_recorded_training_gives_the_gradients_of_running_every_layer(monkeypatch: pytest.MonkeyPatch, messages: type,
+                                                                     aggregation: type, updates: type):
+    domain, inputs = _q_value_inputs('gripper')
+    model = _q_value_model(domain, MIN_REPLAYED_LAYERS, aggregation, messages, updates).to('cuda')
+    eager, recorded, recordings = _eager_and_recorded_gradients(monkeypatch, model, inputs)
+    assert recordings == 1
+    _assert_same_gradients(eager, recorded)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="replaying layers needs CUDA")
+@pytest.mark.parametrize("dom", ['blocks', 'gripper'])
+@pytest.mark.parametrize("config", [
+    {},
+    {'global_readout': True},
+    {'normalize_updates': False, 'residual_updates': True},
+    {'channelwise_normalization': True, 'residual_updates': False},
+])
+def test_recorded_training_supports_the_layer_configurations(monkeypatch: pytest.MonkeyPatch, dom: str, config: dict[str, Any]):
+    domain, inputs = _q_value_inputs(dom)
+    model = _q_value_model(domain, MIN_REPLAYED_LAYERS + 2, **config).to('cuda')
+    eager, recorded, recordings = _eager_and_recorded_gradients(monkeypatch, model, inputs)
+    assert recordings == 1
+    _assert_same_gradients(eager, recorded)
+
+
+class _EvaluatingModel(RelationalGraphNeuralNetwork):
+    """Runs the layers without gradients on another batch after each forward pass, recording into the same memory."""
+
+    def forward(self, x: list[tuple]) -> ForwardState:  # type: ignore
+        forward_state = super().forward(x)
+        with torch.no_grad():
+            super().forward(x[:1] + x).readout('q')
+        return forward_state
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="replaying layers needs CUDA")
+def test_recordings_pending_a_backward_pass_keep_their_gradients(monkeypatch: pytest.MonkeyPatch):
+    domain, inputs = _q_value_inputs('gripper')
+    model = _q_value_model(domain, MIN_REPLAYED_LAYERS, model_type=_EvaluatingModel).to('cuda')
+    # Each recording may reuse the memory of the ones before, whose backward passes replay after it.
+    eager, recorded, recordings = _eager_and_recorded_gradients(monkeypatch, model, inputs[:2], inputs, inputs[1:], inputs[:1])
+    assert recordings == 4
+    _assert_same_gradients(eager, recorded)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="replaying layers needs CUDA")
+def test_recorded_training_reuses_the_memory_of_earlier_recordings():
+    domain, inputs = _q_value_inputs('gripper')
+    model = _q_value_model(domain, MIN_REPLAYED_LAYERS + 2).to('cuda')
+    for count in range(1, len(inputs) + 1):
+        _loss_and_gradients(model, inputs[:count], inputs[count - 1:])
+    reserved = torch.cuda.memory_reserved()
+    for _ in range(3):
+        for count in range(1, len(inputs) + 1):
+            _loss_and_gradients(model, inputs[:count], inputs[count - 1:])
+    assert torch.cuda.memory_reserved() == reserved
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="replaying layers needs CUDA")
+def test_a_recording_without_backward_pass_frees_its_memory():
+    domain, inputs = _q_value_inputs('blocks')
+    model = _q_value_model(domain, MIN_REPLAYED_LAYERS).to('cuda')
+    _loss_and_gradients(model, inputs)
+    allocated = torch.cuda.memory_allocated()
+    q_values = model.forward(inputs).readout('q')
+    assert torch.cuda.memory_allocated() > allocated
+    del q_values
+    assert torch.cuda.memory_allocated() == allocated
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="replaying layers needs CUDA")
+def test_recorded_layers_support_one_backward_pass():
+    domain, inputs = _q_value_inputs('blocks')
+    model = _q_value_model(domain, MIN_REPLAYED_LAYERS).to('cuda')
+    loss = sum(values.sum() for values in model.forward(inputs).readout('q'))
+    assert isinstance(loss, torch.Tensor)
+    loss.backward(retain_graph=True)
+    with pytest.raises(RuntimeError, match="one backward pass"):
+        loss.backward()
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="replaying layers needs CUDA")
+@pytest.mark.parametrize("config", [{'ternarize_messages': True}, {'binarize_updates': True, 'residual_updates': False}])
+def test_quantized_layers_train_without_recordings(monkeypatch: pytest.MonkeyPatch, config: dict[str, Any]):
+    domain, inputs = _q_value_inputs('blocks')
+    model = _q_value_model(domain, MIN_REPLAYED_LAYERS, **config).to('cuda')
+    eager, recorded, recordings = _eager_and_recorded_gradients(monkeypatch, model, inputs)
+    assert recordings == 0
+    _assert_same_gradients(eager, recorded)
+    assert len(model.quantization_records()) > 0
+
+
+class _GradientOnlyMessages(PredicateMLPMessages):
+    """Reads a parameter only when gradients are enabled, so the layer without gradients does not show it."""
+    supports_replay = True
+
+    def __init__(self, hparam_config: HyperparameterConfig, input_spec: tuple[Encoder, ...]):
+        super().__init__(hparam_config, input_spec)
+        self._scale = torch.nn.Parameter(torch.tensor(2.0))
+
+    def forward(self, node_embeddings: torch.Tensor, relations: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+        messages, indices = super().forward(node_embeddings, relations)
+        if torch.is_grad_enabled():
+            messages = messages * self._scale
+        return messages, indices
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="replaying layers needs CUDA")
+def test_layers_that_read_tensors_only_with_gradients_train_without_recordings(monkeypatch: pytest.MonkeyPatch):
+    domain, inputs = _q_value_inputs('blocks')
+    model = _q_value_model(domain, MIN_REPLAYED_LAYERS, messages=_GradientOnlyMessages).to('cuda')
+    with pytest.warns(UserWarning, match="only with gradients enabled"):
+        eager, recorded, recordings = _eager_and_recorded_gradients(monkeypatch, model, inputs)
+    assert recordings == 1
+    _assert_same_gradients(eager, recorded)
+    # Not attempted again.
+    eager, recorded, recordings = _eager_and_recorded_gradients(monkeypatch, model, inputs)
+    assert recordings == 0
+
+
+class _SynchronizingGradient(torch.autograd.Function):
+    """The identity, whose backward pass synchronizes with the host, which a recording cannot contain."""
+
+    @staticmethod
+    def forward(ctx: Any, messages: torch.Tensor) -> torch.Tensor:
+        return messages.clone()
+
+    @staticmethod
+    def backward(ctx: Any, gradient: torch.Tensor) -> torch.Tensor:
+        if gradient.sum().item() > float('inf'):
+            raise AssertionError("unreachable")
+        return gradient
+
+
+class _SynchronizingBackwardMessages(PredicateMLPMessages):
+    supports_replay = True
+
+    def forward(self, node_embeddings: torch.Tensor, relations: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+        messages, indices = super().forward(node_embeddings, relations)
+        return _SynchronizingGradient.apply(messages), indices
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="replaying layers needs CUDA")
+def test_layers_whose_backward_pass_cannot_be_recorded_train_without_recordings(monkeypatch: pytest.MonkeyPatch):
+    domain, inputs = _q_value_inputs('blocks')
+    model = _q_value_model(domain, MIN_REPLAYED_LAYERS, messages=_SynchronizingBackwardMessages).to('cuda')
+    with pytest.warns(UserWarning, match="recording its backward pass failed"):
+        eager, recorded, recordings = _eager_and_recorded_gradients(monkeypatch, model, inputs)
+    assert recordings == 1
+    _assert_same_gradients(eager, recorded)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="replaying layers needs CUDA")
+@pytest.mark.parametrize("failing_messages", [_GradientOnlyMessages, _SynchronizingMessages])
+def test_recordings_work_after_a_failed_first_one(failing_messages: type):
+    domain, inputs = _q_value_inputs('blocks')
+    failing = _q_value_model(domain, MIN_REPLAYED_LAYERS, messages=failing_messages).to('cuda')
+    working = _q_value_model(domain, MIN_REPLAYED_LAYERS).to('cuda')
+    errors: list[BaseException] = []
+
+    def record() -> None:
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                try:
+                    _loss_and_gradients(failing, inputs)
+                except RuntimeError:
+                    pass
+            # Frees the failed recording, which pytest.raises would keep through the traceback.
+            gc.collect()
+            with torch.no_grad():
+                working.forward(inputs).readout('q')
+            _loss_and_gradients(working, inputs)
+        except BaseException as error:
+            errors.append(error)
+
+    # A new thread has replay resources of its own, which no recording used before.
+    thread = threading.Thread(target=record)
+    thread.start()
+    thread.join()
+    assert not errors
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="replaying layers needs CUDA")
+def test_recorded_training_accumulates_the_gradients_of_separate_backward_passes(monkeypatch: pytest.MonkeyPatch):
+    domain, inputs = _q_value_inputs('gripper')
+    model = _q_value_model(domain, MIN_REPLAYED_LAYERS).to('cuda')
+
+    def accumulated_gradients() -> tuple[torch.Tensor, list[torch.Tensor | None]]:
+        model.zero_grad(set_to_none=True)
+        for batch in (inputs[:2], inputs, inputs[1:]):
+            loss = sum(values.square().sum() for values in model.forward(batch).readout('q'))
+            assert isinstance(loss, torch.Tensor)
+            loss.backward()
+        return loss.detach(), [parameter.grad for parameter in model.parameters()]
+
+    recorded = accumulated_gradients()
+    monkeypatch.setattr(rgnn_model, 'REPLAY_TRAINING', False)
+    _assert_same_gradients(accumulated_gradients(), recorded)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="replaying layers needs CUDA")
+def test_training_without_recordings_supports_repeated_and_higher_order_backward_passes(monkeypatch: pytest.MonkeyPatch):
+    domain, inputs = _q_value_inputs('blocks')
+    model = _q_value_model(domain, MIN_REPLAYED_LAYERS).to('cuda')
+    monkeypatch.setattr(rgnn_model, 'REPLAY_TRAINING', False)
+    loss = sum(values.square().sum() for values in model.forward(inputs).readout('q'))
+    assert isinstance(loss, torch.Tensor)
+    loss.backward(retain_graph=True)
+    loss.backward(retain_graph=True)
+    gradients = torch.autograd.grad(loss, list(model.parameters()), create_graph=True, allow_unused=True)
+    sum(gradient.square().sum() for gradient in gradients if gradient is not None).backward()
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="replaying layers needs CUDA")
+def test_layers_without_tensors_that_require_gradients_record_no_backward_pass(monkeypatch: pytest.MonkeyPatch):
+    domain, inputs = _q_value_inputs('blocks')
+    model = _q_value_model(domain, MIN_REPLAYED_LAYERS).to('cuda').requires_grad_(False)
+    with torch.no_grad():
+        expected = model.forward(inputs).readout('q')
+
+    def no_backward_pass(*args: Any) -> None:
+        raise AssertionError("nothing to backpropagate to")
+
+    monkeypatch.setattr(rgnn_model._TrainingRecording, '_record_backward_pass', no_backward_pass)
+    q_values = model.forward(inputs).readout('q')
+    for values, expected_values in zip(q_values, expected):
+        assert not values.requires_grad
+        assert torch.allclose(values, expected_values, atol=1e-5)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="replaying layers needs CUDA")
+def test_recordings_replayed_on_several_streams_keep_their_gradients(monkeypatch: pytest.MonkeyPatch):
+    domain, inputs = _q_value_inputs('gripper')
+    model = _q_value_model(domain, MIN_REPLAYED_LAYERS).to('cuda')
+    streams = [torch.cuda.Stream(), torch.cuda.Stream()]
+
+    def gradients_on_streams() -> tuple[torch.Tensor, list[torch.Tensor | None]]:
+        model.zero_grad(set_to_none=True)
+        losses = []
+        for stream, batch in zip(streams, (inputs, inputs[1:])):
+            stream.wait_stream(torch.cuda.current_stream())
+            with torch.cuda.stream(stream):
+                losses.append(sum(values.square().sum() for values in model.forward(batch).readout('q')))
+        for stream in streams:
+            torch.cuda.current_stream().wait_stream(stream)
+        loss = losses[0] + losses[1]
+        loss.backward()
+        return loss.detach(), [parameter.grad for parameter in model.parameters()]
+
+    recorded = gradients_on_streams()
+    monkeypatch.setattr(rgnn_model, 'REPLAY_TRAINING', False)
+    _assert_same_gradients(gradients_on_streams(), recorded)
+
+
+def test_tensors_in_named_tuples_and_dict_subclasses_are_mapped():
+    Pair = namedtuple('Pair', ['first', 'second'])
+    mapped = rgnn_model._map_tensors(lambda tensor: tensor + 1, (
+        Pair(torch.zeros(1), [torch.ones(1)]),
+        OrderedDict(x=torch.ones(1)),
+        defaultdict(list, y=torch.ones(1)),
+        torch.max(torch.ones(2, 2), 0),
+        5,
+    ))
+    pair, ordered, default, maximum, number = mapped
+    assert isinstance(pair, Pair) and pair.first.item() == 1 and pair.second[0].item() == 2
+    assert type(ordered) is OrderedDict and ordered['x'].item() == 2
+    assert type(default) is defaultdict and default.default_factory is list and default['y'].item() == 2
+    assert type(maximum) is type(torch.max(torch.ones(2, 2), 0)) and maximum.values.tolist() == [2, 2]
+    assert number == 5
