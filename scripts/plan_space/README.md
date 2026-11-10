@@ -10,6 +10,12 @@ goal and the plan nodes (steps, parameters, links, ghosts, flaws, resolvers,
 tombstones) with a grouped-softmax head over `plan_resolves(resolver, flaw)` and
 a scalar delete head over the Step-kind steps.
 
+The step ordering is encoded as the transitive reduction of the ordering
+constraints (`plan_before`) plus explicit `plan_unordered` edges between steps
+that are not ordered either way. Checkpoints trained before this encoding (when
+`plan_before` was the transitive closure and there was no `plan_unordered`) are
+incompatible and must be retrained.
+
 ## Hypothesis
 
 In a sequential planner the number of decisions grows with the plan length. In
@@ -119,9 +125,15 @@ length for both domains.
 
 3. **Evaluation**: `evaluate.py` runs the search with a round budget and a time
    limit on a folder of problems, writes `results.json` and prints a table.
+   `--restarts N` with `--mode sample` makes up to N independent attempts per
+   problem (seeds `--seed`, `--seed + 1`, ...) that share the time limit; the
+   problem counts as solved if any attempt solves it, and `attempts` reports
+   how many were made (`PlanSpaceSearch.run_with_restarts`).
 
        python scripts/plan_space/evaluate.py --checkpoint runs/gripper/best.pt --domain-dir data/gripper \
            --max-rounds 100 --time-limit 60
+       python scripts/plan_space/evaluate.py --checkpoint runs/gripper/best.pt --domain-dir data/gripper \
+           --max-rounds 100 --time-limit 60 --mode sample --restarts 8
 
 Metrics: `coverage`, `mean_rounds`, `mean_plan_length` / `mean_length_ratio`
 (solved plans vs the reference), `duplicate_creations` (a created step whose

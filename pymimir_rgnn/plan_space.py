@@ -376,6 +376,8 @@ class SearchOutcome:
     visited: list[mm.PartialOrderPlan] = field(default_factory=list)
     # A clone of the plan after the last round (solved or not), e.g. for ``prune_to_achieved_goal``.
     final_plan: mm.PartialOrderPlan | None = None
+    # How many independent attempts (restarts) this outcome aggregates.
+    attempts: int = 1
 
     @property
     def plan_length(self) -> int | None:
@@ -395,6 +397,7 @@ class SearchOutcome:
             'duplicate_creations': self.duplicate_creations,
             'cycling_events': self.cycling_events,
             'wall_time': self.wall_time,
+            'attempts': self.attempts,
         }
 
 
@@ -517,6 +520,51 @@ class PlanSpaceSearch:
             wall_time=time.perf_counter() - start,
             visited=visited,
             final_plan=plan.clone(),
+        )
+
+    def run_with_restarts(
+        self,
+        policy: PlanSpacePolicy,
+        problem: mm.Problem,
+        *,
+        restarts: int,
+        time_limit: float | None = None,
+        seed: int | None = None,
+        **options: Any,
+    ) -> SearchOutcome:
+        """Up to ``restarts`` independent :meth:`run` attempts (seeds ``seed``, ``seed+1``, ...) sharing ``time_limit``.
+
+        Stops at the first solved attempt. The outcome carries the plan of the solving attempt (or the final plan of
+        the last one), sums the rounds and the edit counters over the attempts, and records ``attempts``.
+        """
+        assert restarts >= 1, 'At least one attempt is required.'
+        start = time.perf_counter()
+        base_seed = 0 if seed is None else seed
+        outcomes: list[SearchOutcome] = []
+        for attempt in range(restarts):
+            remaining = None if time_limit is None else time_limit - (time.perf_counter() - start)
+            if remaining is not None and remaining <= 0.0 and outcomes:
+                break
+            outcome = self.run(policy, problem, seed=base_seed + attempt, time_limit=remaining, **options)
+            outcomes.append(outcome)
+            if outcome.solved:
+                break
+        last = outcomes[-1]
+        return SearchOutcome(
+            solved=last.solved,
+            rounds=sum(outcome.rounds for outcome in outcomes),
+            plan=last.plan,
+            steps_final=last.steps_final,
+            applied_total=sum(outcome.applied_total for outcome in outcomes),
+            dropped_total=sum(outcome.dropped_total for outcome in outcomes),
+            created_total=sum(outcome.created_total for outcome in outcomes),
+            deleted_total=sum(outcome.deleted_total for outcome in outcomes),
+            duplicate_creations=sum(outcome.duplicate_creations for outcome in outcomes),
+            cycling_events=sum(outcome.cycling_events for outcome in outcomes),
+            wall_time=time.perf_counter() - start,
+            visited=last.visited,
+            final_plan=last.final_plan,
+            attempts=len(outcomes),
         )
 
 

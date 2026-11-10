@@ -3,7 +3,8 @@
 Loads a checkpoint written by ``train.py``, runs the search on every problem of
 ``--problems`` (default ``<domain-dir>/test``) with a round budget and a time
 limit, writes ``results.json`` and prints a table with coverage, rounds, plan
-length vs the reference, duplicates and cycling.
+length vs the reference, duplicates and cycling. ``--restarts`` makes several
+sampled attempts per problem within the time limit.
 
 Example:
     python scripts/plan_space/evaluate.py --checkpoint runs/blocks/best.pt --domain-dir data/blocks --max-rounds 100
@@ -39,6 +40,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--tombstone-lifespan', type=int, default=None, help='default: the training setting')
     parser.add_argument('--no-reference', action='store_true', help='skip reference plans (no plan-length ratio)')
     parser.add_argument('--reference-timeout', type=float, default=60.0)
+    parser.add_argument('--restarts', type=int, default=1,
+                        help='independent attempts per problem within the time limit (seeds seed, seed+1, ...); solved if any attempt is')
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--device', default='cpu')
     return parser
@@ -51,6 +54,7 @@ def main(argv: list[str] | None = None) -> None:
     training_args = extras.get('args', {})
     tombstone_capacity = training_args.get('tombstone_capacity', 0) if args.tombstone_capacity is None else args.tombstone_capacity
     tombstone_lifespan = training_args.get('tombstone_lifespan', 0) if args.tombstone_lifespan is None else args.tombstone_lifespan
+    assert args.restarts >= 1, 'At least one attempt per problem is required.'
 
     problems_dir = args.domain_dir / 'test' if args.problems is None else args.problems
     problems = load_problems(domain, problems_dir)
@@ -62,9 +66,10 @@ def main(argv: list[str] | None = None) -> None:
     search = PlanSpaceSearch()
     outcomes = []
     for name, problem in problems:
-        outcome = search.run(
+        outcome = search.run_with_restarts(
             policy,
             problem,
+            restarts=args.restarts,
             max_rounds=args.max_rounds,
             mode=args.mode,
             temperature=args.temperature,
@@ -78,11 +83,11 @@ def main(argv: list[str] | None = None) -> None:
     summary = summarize_outcomes(outcomes, reference_lengths)
 
     rows = [
-        [name, outcome.solved, outcome.rounds, outcome.plan_length, reference_lengths.get(name), outcome.steps_final,
+        [name, outcome.solved, outcome.attempts, outcome.rounds, outcome.plan_length, reference_lengths.get(name), outcome.steps_final,
          outcome.duplicate_creations, outcome.cycling_events, outcome.wall_time]
         for name, outcome in outcomes
     ]
-    print(format_table(rows, ['problem', 'solved', 'rounds', 'length', 'reference', 'steps', 'duplicates', 'cycling', 'seconds']))
+    print(format_table(rows, ['problem', 'solved', 'attempts', 'rounds', 'length', 'reference', 'steps', 'duplicates', 'cycling', 'seconds']))
     print()
     print(format_table([[key, value] for key, value in summary.items()], ['metric', 'value']))
 
@@ -96,6 +101,7 @@ def main(argv: list[str] | None = None) -> None:
                 'max_rounds': args.max_rounds, 'time_limit': args.time_limit, 'mode': args.mode,
                 'temperature': args.temperature, 'tombstone_capacity': tombstone_capacity,
                 'tombstone_lifespan': tombstone_lifespan, 'recurrent': policy.config.recurrent, 'seed': args.seed,
+                'restarts': args.restarts,
             },
             'summary': summary,
             'problems_results': {

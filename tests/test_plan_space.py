@@ -113,6 +113,23 @@ def test_encoder_relations_are_declared_and_extras_cover_every_node(domain_name:
     assert step_nodes[0].numel() > 0 and step_nodes[1].numel() == 0
 
 
+def test_encoder_emits_the_unordered_relation_for_unordered_steps() -> None:
+    # Fails when the native library predates the reduction-plus-unordered ordering encoding.
+    domain, problem = _load("blocks")
+    encoder = PartialPlanEncoder()
+    assert ("plan_unordered", 2) in encoder.get_relations(domain)
+    plan, flaws = _half_way_plan(problem)
+    step_ids = [step.id for step in plan.steps if step.kind is mm.StepKind.STEP]
+    assert any(
+        not plan.is_before(first, second) and not plan.is_before(second, first)
+        for index, first in enumerate(step_ids) for second in step_ids[index + 1:]
+    )
+    spec = (StateEncoder(), GoalEncoder(), encoder)
+    encoded = get_input_from_encoders([(problem.initial_state, problem.goal, (plan, flaws))], spec, CPU)
+    unordered = encoded.flattened_relations["plan_unordered"]
+    assert unordered.numel() > 0 and unordered.numel() % 2 == 0
+
+
 def test_encoder_rejects_mismatched_inputs() -> None:
     _, problem = _load("blocks")
     plan = mm.PartialOrderPlan.empty(problem)
@@ -569,3 +586,54 @@ def test_train_hei_bootstrap_runs_end_to_end(tmp_path: Path) -> None:
     solved = sum(record["collect"]["solved_episodes"] for record in records)
     assert records[-1]["bootstrap"]["remaining"] <= 4 - min(solved, 1) or solved == 0
     assert (output / "best.pt").exists() and (output / "latest.pt").exists()
+
+
+def test_run_with_restarts_aggregates_attempts() -> None:
+    domain, problem = _load("gripper")
+    policy = _policy(domain)
+    search = PlanSpaceSearch()
+    outcome = search.run_with_restarts(policy, problem, restarts=3, max_rounds=2, mode="sample", seed=4)
+    assert 1 <= outcome.attempts <= 3
+    assert outcome.rounds <= 2 * outcome.attempts
+    if not outcome.solved:
+        assert outcome.attempts == 3
+    assert outcome.to_dict()["attempts"] == outcome.attempts
+    single = search.run_with_restarts(policy, problem, restarts=1, max_rounds=2, mode="sample", seed=4)
+    assert single.attempts == 1
+    # The first attempt always runs; once the time limit is spent no further attempt starts.
+    starved = search.run_with_restarts(policy, problem, restarts=3, max_rounds=2, mode="sample", seed=4, time_limit=0.0)
+    assert starved.attempts == 1
+    # Greedy restarts equal a single greedy run.
+    greedy = search.run_with_restarts(policy, problem, restarts=2, max_rounds=3)
+    plain = search.run(policy, problem, max_rounds=3)
+    assert greedy.solved == plain.solved and greedy.rounds in (plain.rounds, 2 * plain.rounds)
+
+
+def test_evaluate_restarts_are_recorded_in_the_results(tmp_path: Path) -> None:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+    from generate_instances import generate  # noqa: PLC0415
+    import evaluate  # noqa: PLC0415
+
+    data = tmp_path / "data"
+    generate("blocks", data, {"train": 3}, 3, 3, 29)
+    domain = mm.Domain.from_file(data / "domain.pddl")
+    checkpoint = tmp_path / "policy.pt"
+    _policy(domain).save(checkpoint)
+    results = tmp_path / "results.json"
+    common = [
+        "--checkpoint", str(checkpoint), "--domain-dir", str(data), "--problems", str(data / "train"),
+        "--output", str(results), "--max-rounds", "2", "--time-limit", "5", "--no-reference",
+    ]
+    evaluate.main([*common, "--mode", "sample", "--restarts", "2"])
+    written = json.loads(results.read_text())
+    assert written["settings"]["restarts"] == 2
+    assert len(written["problems_results"]) == 3
+    for result in written["problems_results"].values():
+        assert 1 <= result["attempts"] <= 2
+        assert result["solved"] or result["attempts"] == 2
+        assert result["rounds"] <= 2 * result["attempts"]
+    # A single attempt is the default.
+    evaluate.main(common)
+    written = json.loads(results.read_text())
+    assert written["settings"]["restarts"] == 1
+    assert all(result["attempts"] == 1 for result in written["problems_results"].values())
