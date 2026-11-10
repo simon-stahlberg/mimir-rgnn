@@ -80,7 +80,11 @@ def summarize_outcomes(
 
 
 def is_better(candidate: dict[str, Any], best: dict[str, Any] | None) -> bool:
-    """Whether a validation summary beats the best one so far: coverage, then plan-length ratio, then rounds."""
+    """Whether a validation summary beats or ties the best one so far: coverage, then plan-length ratio, then rounds.
+
+    Ties go to the candidate, so when validation cannot separate checkpoints (for example every
+    epoch solves nothing on a hard validation set) the latest, most trained checkpoint is kept.
+    """
     if best is None:
         return True
     key = lambda summary: (  # noqa: E731
@@ -88,7 +92,7 @@ def is_better(candidate: dict[str, Any], best: dict[str, Any] | None) -> bool:
         summary['mean_length_ratio'] if summary['mean_length_ratio'] is not None else float('inf'),
         summary['mean_rounds'] if summary['mean_rounds'] is not None else float('inf'),
     )
-    return key(candidate) < key(best)
+    return key(candidate) <= key(best)
 
 
 def format_table(rows: Sequence[Sequence[Any]], header: Sequence[str]) -> str:

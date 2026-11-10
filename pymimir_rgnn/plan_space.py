@@ -14,7 +14,7 @@ import json
 import os
 import random
 import time
-from collections.abc import Hashable, Sequence
+from collections.abc import Hashable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -578,6 +578,24 @@ def oracle_rollout(
     return samples
 
 
+def oracle_reaches_reference(problem: mm.Problem, reference: mm.PartialOrderPlan, *, max_rounds: int) -> bool:
+    """Whether following the oracle completely from the empty plan reaches a solution within ``max_rounds``.
+
+    The oracle matches steps of the current plan to steps of the reference heuristically, and on references with
+    repeated ground actions (typical of non-optimal planner plans) the matching can flip between the copies and the
+    rollout cycles without ever solving the problem. Such references yield useless imitation data; use this to filter them.
+    """
+    assert reference.problem is problem, 'The reference plan must belong to the problem.'
+    plan = mm.PartialOrderPlan.empty(problem)
+    for _ in range(max_rounds):
+        if plan.is_solution():
+            return True
+        flaws = plan.compute_flaws()
+        targets = mm.oracle_targets(plan, flaws, reference)
+        plan.apply(flaws, targets.resolver_index_per_flaw, targets.step_ids_to_delete)
+    return plan.is_solution()
+
+
 def compute_reference_plan(
     problem: mm.Problem,
     *,
@@ -919,12 +937,187 @@ class CollectStats:
         return asdict(self)
 
 
+@dataclass
+class BootstrapStats:
+    """What one call of :func:`bootstrap_collect` did on top of its :class:`CollectStats`."""
+
+    # Problems with a reference that were collected in bootstrap mode in this call.
+    bootstrap_problems: int
+    # Problems with a reference that are still in bootstrap mode after this call (solved fewer than ``phase_out`` times).
+    remaining: int
+    oracle_episodes: int
+    # Samples from the oracle rollouts and the reference-labelled policy episodes of bootstrap problems.
+    bootstrap_samples: int
+    # Samples from the hindsight path (problems out of bootstrap mode or without a reference).
+    hindsight_samples: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 def _same_goal(a: mm.GroundConjunctiveCondition, b: mm.GroundConjunctiveCondition) -> bool:
     return [str(literal) for literal in a.literals] == [str(literal) for literal in b.literals]
 
 
 def _plan_step_count(plan: mm.PartialOrderPlan) -> int:
     return sum(1 for step in plan.steps if step.kind is mm.StepKind.STEP)
+
+
+def _record_solution(best_solutions: dict[int, mm.PartialOrderPlan] | None, problem: mm.Problem, plan: mm.PartialOrderPlan) -> None:
+    """Store ``plan`` as the best solution of ``problem`` when it has fewer steps than the stored one."""
+    if best_solutions is None:
+        return
+    stored = best_solutions.get(id(problem))
+    if stored is None or _plan_step_count(plan) < _plan_step_count(stored):
+        best_solutions[id(problem)] = plan
+
+
+def _label_visited(
+    problem: mm.Problem,
+    visited: Sequence[mm.PartialOrderPlan],
+    reference: mm.PartialOrderPlan,
+    goal: mm.GroundConjunctiveCondition | None,
+    trajectory_id: int,
+) -> list[Sample]:
+    """Oracle targets towards ``reference`` for every visited plan, relabeled to ``goal`` when one is given."""
+    samples: list[Sample] = []
+    for round_index, snapshot in enumerate(visited):
+        view = snapshot if goal is None or _same_goal(snapshot.goal, goal) else snapshot.with_goal(goal)
+        flaws = view.compute_flaws()
+        if not flaws.flaws:
+            continue
+        targets = mm.oracle_targets(view, flaws, reference)
+        samples.append(Sample(problem, view, targets, trajectory_id, round_index))
+    return samples
+
+
+def _label_in_hindsight(problem: mm.Problem, outcome: SearchOutcome, trajectory_id: int) -> tuple[list[Sample], float] | None:
+    """The samples of one episode labelled with the plan it achieved and the achieved goal fraction; None if it achieved nothing."""
+    assert outcome.final_plan is not None
+    goal_size = len(problem.goal.literals)
+    if outcome.solved:
+        return _label_visited(problem, outcome.visited, outcome.final_plan, None, trajectory_id), 1.0
+    reference = outcome.final_plan.prune_to_achieved_goal()
+    goal = reference.goal
+    if not goal.literals:
+        return None
+    return _label_visited(problem, outcome.visited, reference, goal, trajectory_id), len(goal.literals) / max(goal_size, 1)
+
+
+def _collect(
+    policy: PlanSpacePolicy,
+    problems: Sequence[mm.Problem],
+    *,
+    rollouts_per_problem: int,
+    temperature: float,
+    max_rounds: int,
+    rng: random.Random,
+    tombstone_capacity: int,
+    tombstone_lifespan: int,
+    best_solutions: dict[int, mm.PartialOrderPlan] | None,
+    include_greedy: bool,
+    trajectory_id_start: int,
+    recurrent: bool,
+    references: Mapping[int, mm.PartialOrderPlan] | None,
+    solved_counts: dict[int, int] | None,
+    phase_out: int,
+    oracle_rollouts: int,
+    follow_fraction: float,
+    policy_episodes: bool,
+) -> tuple[list[Sample], CollectStats, BootstrapStats]:
+    assert rollouts_per_problem >= 0, 'rollouts_per_problem must be non-negative.'
+    assert oracle_rollouts >= 0, 'oracle_rollouts must be non-negative.'
+    start = time.perf_counter()
+    search = PlanSpaceSearch()
+    samples: list[Sample] = []
+    trajectory_id = trajectory_id_start
+    episodes = solved_episodes = skipped = 0
+    bootstrap_problems = oracle_episodes = bootstrap_samples = hindsight_samples = 0
+    goal_fractions: list[float] = []
+    rounds: list[int] = []
+    modes: list[Literal['greedy', 'sample']] = ['sample'] * rollouts_per_problem
+    if include_greedy:
+        modes.insert(0, 'greedy')
+    for problem in problems:
+        key = id(problem)
+        reference = None if references is None else references.get(key)
+        bootstrap = reference is not None and (solved_counts is None or solved_counts.get(key, 0) < phase_out)
+        if bootstrap:
+            assert reference is not None
+            bootstrap_problems += 1
+            for _ in range(oracle_rollouts):
+                new_samples = oracle_rollout(
+                    problem,
+                    reference,
+                    follow_fraction=follow_fraction,
+                    rng=rng,
+                    max_rounds=max_rounds,
+                    tombstone_capacity=tombstone_capacity,
+                    tombstone_lifespan=tombstone_lifespan,
+                    trajectory_id=trajectory_id,
+                )
+                samples.extend(new_samples)
+                bootstrap_samples += len(new_samples)
+                oracle_episodes += 1
+                trajectory_id += 1
+        if not policy_episodes:
+            continue
+        for mode in modes:
+            outcome = search.run(
+                policy,
+                problem,
+                max_rounds=max_rounds,
+                mode=mode,
+                temperature=temperature,
+                tombstone_capacity=tombstone_capacity,
+                tombstone_lifespan=tombstone_lifespan,
+                recurrent=recurrent,
+                seed=rng.randrange(2**31),
+                record_visited=True,
+            )
+            episodes += 1
+            rounds.append(outcome.rounds)
+            assert outcome.final_plan is not None
+            if outcome.solved:
+                solved_episodes += 1
+                _record_solution(best_solutions, problem, outcome.final_plan)
+                if solved_counts is not None:
+                    solved_counts[key] = solved_counts.get(key, 0) + 1
+            if bootstrap:
+                assert reference is not None
+                new_samples = _label_visited(problem, outcome.visited, reference, None, trajectory_id)
+                bootstrap_samples += len(new_samples)
+            else:
+                labelled = _label_in_hindsight(problem, outcome, trajectory_id)
+                if labelled is None:
+                    skipped += 1
+                    trajectory_id += 1
+                    continue
+                new_samples, goal_fraction = labelled
+                goal_fractions.append(goal_fraction)
+                hindsight_samples += len(new_samples)
+            samples.extend(new_samples)
+            trajectory_id += 1
+    stats = CollectStats(
+        episodes=episodes,
+        solved_episodes=solved_episodes,
+        skipped_episodes=skipped,
+        mean_goal_fraction=sum(goal_fractions) / len(goal_fractions) if goal_fractions else None,
+        samples=len(samples),
+        mean_rounds=sum(rounds) / len(rounds) if rounds else None,
+        wall_time=time.perf_counter() - start,
+    )
+    remaining = 0
+    if references is not None:
+        remaining = sum(1 for key in references if solved_counts is None or solved_counts.get(key, 0) < phase_out)
+    bootstrap_stats = BootstrapStats(
+        bootstrap_problems=bootstrap_problems,
+        remaining=remaining,
+        oracle_episodes=oracle_episodes,
+        bootstrap_samples=bootstrap_samples,
+        hindsight_samples=hindsight_samples,
+    )
+    return samples, stats, bootstrap_stats
 
 
 def hindsight_collect(
@@ -955,76 +1148,91 @@ def hindsight_collect(
     computed. Episodes whose pruned plan achieves nothing are skipped. No planner is
     involved, so the labels are consistent with what the policy itself can produce.
     """
-    assert rollouts_per_problem >= 0, 'rollouts_per_problem must be non-negative.'
-    start = time.perf_counter()
-    search = PlanSpaceSearch()
-    samples: list[Sample] = []
-    trajectory_id = trajectory_id_start
-    episodes = solved_episodes = skipped = 0
-    goal_fractions: list[float] = []
-    rounds: list[int] = []
-    for problem in problems:
-        problem_goal = problem.goal
-        goal_size = len(problem_goal.literals)
-        modes: list[Literal['greedy', 'sample']] = ['sample'] * rollouts_per_problem
-        if include_greedy:
-            modes.insert(0, 'greedy')
-        for mode in modes:
-            outcome = search.run(
-                policy,
-                problem,
-                max_rounds=max_rounds,
-                mode=mode,
-                temperature=temperature,
-                tombstone_capacity=tombstone_capacity,
-                tombstone_lifespan=tombstone_lifespan,
-                recurrent=recurrent,
-                seed=rng.randrange(2**31),
-                record_visited=True,
-            )
-            episodes += 1
-            rounds.append(outcome.rounds)
-            assert outcome.final_plan is not None
-            if outcome.solved:
-                solved_episodes += 1
-                reference = outcome.final_plan
-                goal = problem_goal
-                relabel = False
-                if best_solutions is not None:
-                    stored = best_solutions.get(id(problem))
-                    if stored is None or _plan_step_count(reference) < _plan_step_count(stored):
-                        best_solutions[id(problem)] = reference
-            else:
-                reference = outcome.final_plan.prune_to_achieved_goal()
-                goal = reference.goal
-                if not goal.literals:
-                    skipped += 1
-                    trajectory_id += 1
-                    continue
-                relabel = True
-            goal_fractions.append(len(goal.literals) / max(goal_size, 1))
-            for round_index, snapshot in enumerate(outcome.visited):
-                view = snapshot.with_goal(goal) if relabel and not _same_goal(snapshot.goal, goal) else snapshot
-                flaws = view.compute_flaws()
-                if not flaws.flaws:
-                    continue
-                targets = mm.oracle_targets(view, flaws, reference)
-                samples.append(Sample(problem, view, targets, trajectory_id, round_index))
-            trajectory_id += 1
-    stats = CollectStats(
-        episodes=episodes,
-        solved_episodes=solved_episodes,
-        skipped_episodes=skipped,
-        mean_goal_fraction=sum(goal_fractions) / len(goal_fractions) if goal_fractions else None,
-        samples=len(samples),
-        mean_rounds=sum(rounds) / len(rounds) if rounds else None,
-        wall_time=time.perf_counter() - start,
+    samples, stats, _ = _collect(
+        policy,
+        problems,
+        rollouts_per_problem=rollouts_per_problem,
+        temperature=temperature,
+        max_rounds=max_rounds,
+        rng=rng,
+        tombstone_capacity=tombstone_capacity,
+        tombstone_lifespan=tombstone_lifespan,
+        best_solutions=best_solutions,
+        include_greedy=include_greedy,
+        trajectory_id_start=trajectory_id_start,
+        recurrent=recurrent,
+        references=None,
+        solved_counts=None,
+        phase_out=0,
+        oracle_rollouts=0,
+        follow_fraction=1.0,
+        policy_episodes=True,
     )
     return samples, stats
 
 
+def bootstrap_collect(
+    policy: PlanSpacePolicy,
+    problems: Sequence[mm.Problem],
+    *,
+    references: Mapping[int, mm.PartialOrderPlan],
+    solved_counts: dict[int, int],
+    phase_out: int,
+    rollouts_per_problem: int,
+    temperature: float,
+    max_rounds: int,
+    rng: random.Random,
+    oracle_rollouts: int = 1,
+    follow_fraction: float = 0.5,
+    policy_episodes: bool = True,
+    tombstone_capacity: int = 0,
+    tombstone_lifespan: int = 0,
+    best_solutions: dict[int, mm.PartialOrderPlan] | None = None,
+    include_greedy: bool = True,
+    trajectory_id_start: int = 0,
+    recurrent: bool = False,
+) -> tuple[list[Sample], CollectStats, BootstrapStats]:
+    """Hindsight expert iteration bootstrapped from planner references that are phased out as the policy learns.
+
+    ``references[id(problem)]`` is a planner solution of the problem. A problem with a
+    reference is in *bootstrap mode* until ``solved_counts[id(problem)]`` reaches
+    ``phase_out``; the counts are incremented here for every solved policy episode
+    (sampled and greedy), so they accumulate across calls. For a problem in bootstrap
+    mode this call runs ``oracle_rollouts`` teacher-forced :func:`oracle_rollout`
+    episodes against the reference with ``follow_fraction`` and labels the policy's
+    own episodes against the reference for the full goal (DAgger style) instead of
+    pruning and relabeling them. Problems out of bootstrap mode, or without a
+    reference, take the hindsight path of :func:`hindsight_collect`. Solved episodes
+    always update ``best_solutions``. With ``policy_episodes=False`` only the oracle
+    rollouts run (a pure bootstrap warm-up). The returned :class:`CollectStats`
+    cover the policy episodes of both paths; ``mean_goal_fraction`` and
+    ``skipped_episodes`` refer to the hindsight path only.
+    """
+    return _collect(
+        policy,
+        problems,
+        rollouts_per_problem=rollouts_per_problem,
+        temperature=temperature,
+        max_rounds=max_rounds,
+        rng=rng,
+        tombstone_capacity=tombstone_capacity,
+        tombstone_lifespan=tombstone_lifespan,
+        best_solutions=best_solutions,
+        include_greedy=include_greedy,
+        trajectory_id_start=trajectory_id_start,
+        recurrent=recurrent,
+        references=references,
+        solved_counts=solved_counts,
+        phase_out=phase_out,
+        oracle_rollouts=oracle_rollouts,
+        follow_fraction=follow_fraction,
+        policy_episodes=policy_episodes,
+    )
+
+
 __all__ = [
     'PLAN_NODE_TYPES',
+    'BootstrapStats',
     'CollectStats',
     'EpochMetrics',
     'ImitationTrainer',
@@ -1037,8 +1245,10 @@ __all__ = [
     'Sample',
     'SearchOutcome',
     'TrainingConfig',
+    'bootstrap_collect',
     'compute_reference_plan',
     'hindsight_collect',
+    'oracle_reaches_reference',
     'oracle_rollout',
     'plan_from_strings',
     'plan_to_strings',

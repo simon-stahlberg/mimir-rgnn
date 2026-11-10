@@ -2,7 +2,8 @@
 
 Expects ``<domain-dir>/domain.pddl`` with ``train/`` and ``validation/`` folders
 (see ``generate_instances.py``). Reference plans are cached in
-``<domain-dir>/references.json``. Every epoch validates by running the greedy
+``<domain-dir>/references.json``; training problems whose reference the oracle
+cannot reproduce within ``--max-rounds`` are dropped. Every epoch validates by running the greedy
 search on the validation problems and appends a line to ``<output>/metrics.jsonl``;
 ``best.pt`` tracks the best validation (coverage, then plan-length ratio, then
 rounds) and ``latest.pt`` the last epoch.
@@ -35,6 +36,7 @@ from pymimir_rgnn import (  # noqa: E402
     PolicyConfig,
     Sample,
     TrainingConfig,
+    oracle_reaches_reference,
     oracle_rollout,
 )
 
@@ -113,6 +115,13 @@ def main(argv: list[str] | None = None) -> None:
         name: mm.PartialOrderPlan.from_sequential_plan(problem, train_references[name])
         for name, problem in train_problems
     }
+    # The oracle cannot reproduce every planner plan (see ``oracle_reaches_reference``); such references only yield
+    # cycling rollouts, so their problems are dropped from the training set.
+    unusable = [name for name, problem in train_problems if not oracle_reaches_reference(problem, references[name], max_rounds=args.max_rounds)]
+    if unusable:
+        print(f'dropping {len(unusable)} training problems whose reference the oracle does not reach within {args.max_rounds} rounds: '
+              f'{", ".join(unusable)}')
+        train_problems = [(name, problem) for name, problem in train_problems if name not in set(unusable)]
     validation_lengths = {name: len(actions) for name, actions in validation_references.items()}
 
     start = time.perf_counter()

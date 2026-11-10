@@ -66,18 +66,56 @@ length for both domains.
    (`--buffer-cap`), the policy trains `--epochs-per-iteration` epochs on it,
    and validation runs the greedy search. `--init-from` warm-starts from an
    imitation checkpoint (the model flags then come from the checkpoint).
+   `--problems-per-iteration` collects on a random subset of the training
+   problems each iteration.
 
    Data requirement: only `domain.pddl`, `train/` and `validation/` are needed;
-   `references.json` is never computed. If a cache already exists, validation
-   reports the plan-length ratio for the problems it covers, otherwise the ratio
-   is skipped. The per-iteration line and `metrics.jsonl` report the solved
-   fraction and the mean achieved-goal fraction of the collected episodes.
+   without `--bootstrap`, `references.json` is never computed. If a cache
+   already exists, validation reports the plan-length ratio for the problems
+   it covers, otherwise the ratio is skipped. The per-iteration line and
+   `metrics.jsonl` report the solved fraction and the mean achieved-goal
+   fraction of the collected episodes.
 
        python scripts/plan_space/train_hei.py --domain-dir data/blocks --output runs/blocks_hei \
            --iterations 12 --rollouts-per-problem 3 --temperature 1.0 --epochs-per-iteration 2 \
            --layers 8 --embedding-size 32
        python scripts/plan_space/train_hei.py --domain-dir data/blocks --output runs/blocks_hei_warm \
            --init-from runs/blocks/best.pt --iterations 12
+
+   **Bootstrapped HEI.** From scratch, HEI collapses: random rollouts never
+   complete a causal chain, the pruned goals are trivial and the policy learns
+   to do nothing. `--bootstrap` accepts planner dependence for the start.
+   Before the first iteration, reference plans of the training problems are
+   computed with a short per-instance budget (`--bootstrap-timeout`, default
+   10 s; cached in `references.json`); whatever the planner solves in time, and
+   the oracle can reproduce (see below), is the bootstrap set, i.e. the easiest
+   instances. A problem stays in *bootstrap mode* until the policy has solved
+   it `--bootstrap-phase-out` times (default 2) during collection, counting
+   sampled and greedy episodes across iterations. Collection for a problem in
+   bootstrap mode (`pymimir_rgnn.bootstrap_collect`) runs
+   `--bootstrap-oracle-rollouts` (default 1) teacher-forced oracle rollouts
+   against the reference with `--follow-fraction` (default 0.5), and labels the
+   policy's own episodes against the reference for the full goal (DAgger-style)
+   instead of pruning and relabeling them; problems out of bootstrap mode, or
+   without a reference, take the hindsight path. `--bootstrap-iterations M`
+   prepends M warm-up iterations in which only the oracle rollouts run. The
+   per-iteration line and `metrics.jsonl` (`bootstrap`) report the problems in
+   bootstrap mode, the problems still to be phased out, and the samples from
+   the bootstrap and the hindsight path.
+
+       python scripts/plan_space/train_hei.py --domain-dir data/blocks --output runs/blocks_hei_boot \
+           --bootstrap --bootstrap-timeout 10 --bootstrap-iterations 2 --iterations 10 \
+           --rollouts-per-problem 2 --layers 8 --embedding-size 32
+
+   **Unusable references.** The oracle (`pymimir.oracle_targets`) matches the
+   steps of the current plan to the reference heuristically. On references
+   with repeated ground actions (typical of non-optimal GBFS plans; in
+   Blocksworld from about 8 blocks on) the matching can flip between the copies,
+   the threat rule deletes the "wrong" step and the teacher-forced rollout cycles
+   without ever solving the problem. `train.py` and the bootstrap therefore
+   check every reference with `pymimir_rgnn.oracle_reaches_reference` (a full
+   oracle rollout within `--max-rounds`) and drop the problems whose reference
+   the oracle cannot reproduce; the log reports how many.
 
 3. **Evaluation**: `evaluate.py` runs the search with a round budget and a time
    limit on a folder of problems, writes `results.json` and prints a table.

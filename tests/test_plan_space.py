@@ -13,6 +13,7 @@ import torch
 
 from pymimir_rgnn import (
     PLAN_NODE_TYPES,
+    BootstrapStats,
     CollectStats,
     ImitationTrainer,
     PartialPlanEncoder,
@@ -21,8 +22,10 @@ from pymimir_rgnn import (
     PolicyConfig,
     Sample,
     TrainingConfig,
+    bootstrap_collect,
     compute_reference_plan,
     hindsight_collect,
+    oracle_reaches_reference,
     oracle_rollout,
     plan_from_strings,
     plan_to_strings,
@@ -184,6 +187,14 @@ def test_oracle_rollout_samples_realign_after_recomputing_flaws(domain_name: str
             plan.apply(flaws, sample.targets.resolver_index_per_flaw, sample.targets.step_ids_to_delete)
         assert plan.is_solution()
         assert len(plan.linearize()) == len(reference.linearize())
+
+
+@pytest.mark.parametrize("domain_name", ["blocks", "gripper"])
+def test_oracle_reaches_reference_needs_enough_rounds(domain_name: str) -> None:
+    _, problem = _load(domain_name)
+    reference = _reference(problem)
+    assert oracle_reaches_reference(problem, reference, max_rounds=40)
+    assert not oracle_reaches_reference(problem, reference, max_rounds=1)
 
 
 def test_reference_plan_round_trips_through_strings() -> None:
@@ -383,6 +394,84 @@ def test_hindsight_collect_relabels_rollouts_to_achieved_subgoals(tmp_path: Path
     assert metrics.sample_count == len(samples)
 
 
+def test_bootstrap_collect_labels_against_the_planner_reference(tmp_path: Path) -> None:
+    problems = _generate_blocks(tmp_path, 3, 3, 5)
+    domain = problems[0].domain
+    policy = _policy(domain)
+    references = {id(problem): _reference(problem) for problem in problems}
+    solved_counts: dict[int, int] = {}
+    best_solutions: dict[int, mm.PartialOrderPlan] = {}
+    samples, stats, boot = bootstrap_collect(
+        policy, problems, references=references, solved_counts=solved_counts, phase_out=2,
+        rollouts_per_problem=2, temperature=1.0, max_rounds=6, rng=random.Random(0), oracle_rollouts=2,
+        follow_fraction=0.5, best_solutions=best_solutions, trajectory_id_start=10,
+    )
+    assert isinstance(stats, CollectStats) and isinstance(boot, BootstrapStats)
+    # Every problem has a reference and no solved episodes yet, so all of them are in bootstrap mode.
+    assert boot.bootstrap_problems == len(problems)
+    assert boot.oracle_episodes == 2 * len(problems)
+    assert boot.hindsight_samples == 0
+    assert boot.bootstrap_samples == len(samples) == stats.samples > 0
+    assert stats.episodes == 3 * len(problems)
+    assert stats.skipped_episodes == 0 and stats.mean_goal_fraction is None
+    assert boot.remaining == len(problems) - sum(1 for count in solved_counts.values() if count >= 2)
+    assert sum(solved_counts.values()) == stats.solved_episodes
+    assert (len(best_solutions) > 0) == (stats.solved_episodes > 0)
+    # Oracle rollouts and policy episodes get distinct trajectory ids, starting at the given one.
+    trajectory_ids = {sample.trajectory_id for sample in samples}
+    assert min(trajectory_ids) == 10 and max(trajectory_ids) < 10 + boot.oracle_episodes + stats.episodes
+    # Samples keep the full goal (no relabeling) and the empty plan is labelled with the reference's first steps.
+    empty_plan_samples = [sample for sample in samples if sample.round_index == 0]
+    assert len(empty_plan_samples) == boot.oracle_episodes + stats.episodes
+    for sample in samples:
+        assert _literal_strings(sample.plan_snapshot.goal) == _literal_strings(sample.problem.goal)
+    for sample in empty_plan_samples:
+        assert any(target != 0 for target in sample.targets.resolver_index_per_flaw)
+    items = ImitationTrainer.items_of(samples)
+    assert len(items) == len(samples)
+    for (_, _, plan, flaws), targets in items:
+        assert len(flaws.flaws) == len(targets.resolver_index_per_flaw) > 0
+        assert set(targets.step_ids_to_delete) <= {step.id for step in plan.steps}
+
+
+def test_bootstrap_collect_phases_problems_out_and_supports_pure_warmup(tmp_path: Path) -> None:
+    problems = _generate_blocks(tmp_path, 3, 3, 7)
+    domain = problems[0].domain
+    policy = _policy(domain)
+    # The first problem has no reference, the second one was already solved twice: both take the hindsight path.
+    references = {id(problem): _reference(problem) for problem in problems[1:]}
+    solved_counts = {id(problems[1]): 2}
+    samples, stats, boot = bootstrap_collect(
+        policy, problems, references=references, solved_counts=solved_counts, phase_out=2,
+        rollouts_per_problem=2, temperature=1.0, max_rounds=6, rng=random.Random(1), oracle_rollouts=1,
+    )
+    assert boot.bootstrap_problems == 1
+    assert boot.oracle_episodes == 1
+    assert boot.remaining == 1 - int(solved_counts.get(id(problems[2]), 0) >= 2)
+    assert stats.episodes == 3 * len(problems)
+    assert boot.bootstrap_samples + boot.hindsight_samples == len(samples) == stats.samples
+    assert boot.bootstrap_samples > 0
+    assert solved_counts[id(problems[1])] >= 2 and id(problems[0]) not in solved_counts
+    relabeled = sum(int(_literal_strings(s.plan_snapshot.goal) != _literal_strings(s.problem.goal)) for s in samples)
+    assert relabeled == 0 or boot.hindsight_samples > 0
+    # Only the oracle rollouts run during a pure warm-up.
+    samples, stats, boot = bootstrap_collect(
+        policy, problems, references=references, solved_counts=solved_counts, phase_out=2,
+        rollouts_per_problem=2, temperature=1.0, max_rounds=6, rng=random.Random(2), oracle_rollouts=3, policy_episodes=False,
+    )
+    assert stats.episodes == 0 and stats.mean_rounds is None
+    assert boot.oracle_episodes == 3 and boot.bootstrap_problems == 1
+    assert len(samples) == boot.bootstrap_samples > 0 and boot.hindsight_samples == 0
+    # Without references and counts, the shared machinery is plain hindsight collection.
+    rng_a, rng_b = random.Random(3), random.Random(3)
+    plain, plain_stats = hindsight_collect(policy, problems, rollouts_per_problem=1, temperature=1.0, max_rounds=5, rng=rng_a)
+    again, again_stats, again_boot = bootstrap_collect(
+        policy, problems, references={}, solved_counts={}, phase_out=2, rollouts_per_problem=1, temperature=1.0, max_rounds=5, rng=rng_b,
+    )
+    assert plain_stats.to_dict() | {"wall_time": 0} == again_stats.to_dict() | {"wall_time": 0}
+    assert again_boot.bootstrap_problems == 0 and again_boot.hindsight_samples == len(again) == len(plain)
+
+
 def test_items_of_encodes_the_snapshot_goal() -> None:
     _, problem = _load("blocks")
     plan, _ = _half_way_plan(problem)
@@ -444,3 +533,39 @@ def test_train_hei_runs_end_to_end(tmp_path: Path) -> None:
     loaded, extras = PlanSpacePolicy.load(mm.Domain.from_file(data / "domain.pddl"), warm / "latest.pt")
     assert loaded.config.num_layers == 2 and loaded.config.embedding_size == 8
     assert extras["collect"]["episodes"] == 4
+
+
+def test_train_hei_bootstrap_runs_end_to_end(tmp_path: Path) -> None:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+    from generate_instances import generate  # noqa: PLC0415
+    import train_hei  # noqa: PLC0415
+
+    data = tmp_path / "data"
+    generate("blocks", data, {"train": 4, "validation": 2}, 3, 3, 23)
+    output = tmp_path / "run"
+    train_hei.main([
+        "--domain-dir", str(data), "--output", str(output), "--bootstrap", "--bootstrap-iterations", "1", "--iterations", "2",
+        "--bootstrap-phase-out", "1", "--bootstrap-oracle-rollouts", "2", "--rollouts-per-problem", "1",
+        "--problems-per-iteration", "3", "--epochs-per-iteration", "1", "--max-rounds", "8", "--layers", "2",
+        "--embedding-size", "8", "--batch-size", "8",
+    ])
+    cache = json.loads((data / "references.json").read_text())
+    assert len(cache) == 4 and all(key.startswith("train/") for key in cache)
+    records = [json.loads(line) for line in (output / "metrics.jsonl").read_text().splitlines()]
+    assert [record["iteration"] for record in records] == [1, 2, 3]
+    assert [record["warmup"] for record in records] == [True, False, False]
+    assert all(record["problems"] == 3 for record in records)
+    warmup = records[0]
+    assert warmup["collect"]["episodes"] == 0 and warmup["bootstrap"]["oracle_episodes"] == 6
+    assert warmup["bootstrap"]["references"] == 4 and warmup["bootstrap"]["remaining"] == 4
+    assert warmup["collect"]["samples"] == warmup["bootstrap"]["bootstrap_samples"] > 0
+    assert warmup["train"] is not None
+    for record in records[1:]:
+        assert record["collect"]["episodes"] == 3 * 2
+        boot = record["bootstrap"]
+        assert 0 <= boot["bootstrap_problems"] <= 3 and 0 <= boot["remaining"] <= 4
+        assert boot["bootstrap_samples"] + boot["hindsight_samples"] == record["collect"]["samples"]
+    # Once a problem is solved (phase-out 1), it leaves bootstrap mode.
+    solved = sum(record["collect"]["solved_episodes"] for record in records)
+    assert records[-1]["bootstrap"]["remaining"] <= 4 - min(solved, 1) or solved == 0
+    assert (output / "best.pt").exists() and (output / "latest.pt").exists()

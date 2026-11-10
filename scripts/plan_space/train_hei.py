@@ -13,9 +13,21 @@ search on the validation problems; the plan-length ratio is reported only when
 per iteration goes to ``<output>/metrics.jsonl``; ``best.pt`` tracks the best
 validation (coverage, then ratio, then rounds) and ``latest.pt`` the last iteration.
 
+From scratch, random rollouts rarely complete a causal chain and the relabeled
+goals stay trivial. ``--bootstrap`` accepts planner dependence for the start:
+reference plans of the training problems are computed with a short budget
+(``--bootstrap-timeout``; cached in ``<domain-dir>/references.json``) and the
+problems the planner solved in time, whose reference the oracle can reproduce,
+are collected in bootstrap mode (oracle rollouts against the reference plus
+DAgger-style labelling of the policy's own episodes,
+``pymimir_rgnn.bootstrap_collect``) until the policy has solved them
+``--bootstrap-phase-out`` times, after which they take the hindsight path.
+``--bootstrap-iterations`` prepends pure oracle-rollout warm-up iterations.
+
 Example:
     python scripts/plan_space/train_hei.py --domain-dir data/blocks --output runs/blocks_hei --iterations 12
     python scripts/plan_space/train_hei.py --domain-dir data/blocks --output runs/blocks_hei --init-from runs/blocks/best.pt
+    python scripts/plan_space/train_hei.py --domain-dir data/blocks --output runs/blocks_hei --bootstrap --bootstrap-iterations 2
 """
 
 from __future__ import annotations
@@ -43,7 +55,9 @@ from pymimir_rgnn import (  # noqa: E402
     ReferenceCache,
     Sample,
     TrainingConfig,
+    bootstrap_collect,
     hindsight_collect,
+    oracle_reaches_reference,
 )
 
 
@@ -75,6 +89,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--device', default='cpu')
     parser.add_argument('--validation-time-limit', type=float, default=None, help='seconds per validation problem')
+    parser.add_argument('--problems-per-iteration', type=int, default=None,
+                        help='collect on a random subset of this many training problems per iteration (default: all)')
+    parser.add_argument('--bootstrap', action='store_true',
+                        help='bootstrap from planner references of the training problems the planner solves in time')
+    parser.add_argument('--bootstrap-timeout', type=float, default=10.0, help='seconds per reference-plan search of the bootstrap')
+    parser.add_argument('--bootstrap-phase-out', type=int, default=2,
+                        help='a problem leaves bootstrap mode once the policy has solved it this many times during collection')
+    parser.add_argument('--bootstrap-oracle-rollouts', type=int, default=1, help='oracle rollouts per bootstrap problem and iteration')
+    parser.add_argument('--follow-fraction', type=float, default=0.5,
+                        help='fraction of non-NoOp oracle choices followed per round in the bootstrap oracle rollouts')
+    parser.add_argument('--bootstrap-iterations', type=int, default=0,
+                        help='warm-up iterations of pure oracle-rollout collection before the mixed iterations')
     return parser
 
 
@@ -89,6 +115,33 @@ def cached_reference_lengths(problems: list[tuple[str, mm.Problem]], cache_path:
         if actions is not None:
             lengths[name] = len(actions)
     return lengths
+
+
+def bootstrap_references(
+    problems: list[tuple[str, mm.Problem]],
+    cache_path: Path,
+    timeout_seconds: float,
+    max_rounds: int,
+) -> tuple[dict[int, mm.PartialOrderPlan], int]:
+    """Planner references of the problems solved within ``timeout_seconds`` (or already cached), keyed by ``id(problem)``.
+
+    The budget applies to each of the two searches of ``compute_reference_plan`` (BFS, then GBFS with FF); a cached
+    reference computed with a longer budget by another script is used as well. References the oracle cannot
+    reproduce within ``max_rounds`` (``oracle_reaches_reference``) are left out; their number is returned as well.
+    """
+    cache = ReferenceCache(cache_path)
+    references: dict[int, mm.PartialOrderPlan] = {}
+    unusable = 0
+    for name, problem in problems:
+        actions = cache.get_or_compute(name, problem, timeout_seconds=timeout_seconds)
+        if actions is None:
+            continue
+        reference = mm.PartialOrderPlan.from_sequential_plan(problem, actions)
+        if not oracle_reaches_reference(problem, reference, max_rounds=max_rounds):
+            unusable += 1
+            continue
+        references[id(problem)] = reference
+    return references, unusable
 
 
 def validate(
@@ -153,6 +206,19 @@ def main(argv: list[str] | None = None) -> None:
         recurrent=policy.config.recurrent,
     ), seed=args.seed)
 
+    references: dict[int, mm.PartialOrderPlan] = {}
+    solved_counts: dict[int, int] = {}
+    if args.bootstrap:
+        start = time.perf_counter()
+        references, unusable = bootstrap_references(
+            train_problems, args.domain_dir / 'references.json', args.bootstrap_timeout, args.max_rounds,
+        )
+        print(f'bootstrap: references for {len(references)}/{len(train_problems)} training problems '
+              f'within {args.bootstrap_timeout:g}s each ({time.perf_counter() - start:.1f}s; {unusable} more found but not '
+              f'reproducible by the oracle within {args.max_rounds} rounds); phase-out after {args.bootstrap_phase_out} solved episodes',
+              flush=True)
+    warmup_iterations = args.bootstrap_iterations if args.bootstrap else 0
+
     buffer: list[Sample] = []
     best_solutions: dict[int, mm.PartialOrderPlan] = {}
     best: dict[str, Any] | None = None
@@ -161,21 +227,49 @@ def main(argv: list[str] | None = None) -> None:
                                'init_from': None if args.init_from is None else str(args.init_from)}
     metrics_path = args.output / 'metrics.jsonl'
     with metrics_path.open('a') as metrics_file:
-        for iteration in range(1, args.iterations + 1):
-            new_samples, collect = hindsight_collect(
-                policy,
-                [problem for _, problem in train_problems],
-                rollouts_per_problem=args.rollouts_per_problem,
-                temperature=args.temperature,
-                max_rounds=args.max_rounds,
-                rng=rng,
-                tombstone_capacity=args.tombstone_capacity,
-                tombstone_lifespan=args.tombstone_lifespan,
-                best_solutions=best_solutions,
-                include_greedy=not args.no_greedy_rollout,
-                trajectory_id_start=trajectory_id,
-                recurrent=policy.config.recurrent,
-            )
+        for iteration in range(1, warmup_iterations + args.iterations + 1):
+            warmup = iteration <= warmup_iterations
+            problems = [problem for _, problem in train_problems]
+            if args.problems_per_iteration is not None and args.problems_per_iteration < len(problems):
+                problems = rng.sample(problems, args.problems_per_iteration)
+            bootstrap = None
+            if args.bootstrap:
+                new_samples, collect, bootstrap = bootstrap_collect(
+                    policy,
+                    problems,
+                    references=references,
+                    solved_counts=solved_counts,
+                    phase_out=args.bootstrap_phase_out,
+                    rollouts_per_problem=args.rollouts_per_problem,
+                    temperature=args.temperature,
+                    max_rounds=args.max_rounds,
+                    rng=rng,
+                    oracle_rollouts=args.bootstrap_oracle_rollouts,
+                    follow_fraction=args.follow_fraction,
+                    policy_episodes=not warmup,
+                    tombstone_capacity=args.tombstone_capacity,
+                    tombstone_lifespan=args.tombstone_lifespan,
+                    best_solutions=best_solutions,
+                    include_greedy=not args.no_greedy_rollout,
+                    trajectory_id_start=trajectory_id,
+                    recurrent=policy.config.recurrent,
+                )
+                trajectory_id += bootstrap.oracle_episodes
+            else:
+                new_samples, collect = hindsight_collect(
+                    policy,
+                    problems,
+                    rollouts_per_problem=args.rollouts_per_problem,
+                    temperature=args.temperature,
+                    max_rounds=args.max_rounds,
+                    rng=rng,
+                    tombstone_capacity=args.tombstone_capacity,
+                    tombstone_lifespan=args.tombstone_lifespan,
+                    best_solutions=best_solutions,
+                    include_greedy=not args.no_greedy_rollout,
+                    trajectory_id_start=trajectory_id,
+                    recurrent=policy.config.recurrent,
+                )
             trajectory_id += collect.episodes
             buffer.extend(new_samples)
             if len(buffer) > args.buffer_cap:
@@ -191,9 +285,12 @@ def main(argv: list[str] | None = None) -> None:
 
             record = {
                 'iteration': iteration,
+                'warmup': warmup,
+                'problems': len(problems),
                 'buffer': len(buffer),
                 'best_solutions': len(best_solutions),
                 'collect': collect.to_dict(),
+                'bootstrap': None if bootstrap is None else bootstrap.to_dict() | {'references': len(references)},
                 'train': None if train_metrics is None else train_metrics.to_dict() | {'epochs_wall_time': train_time},
                 'validation': validation,
             }
@@ -206,15 +303,21 @@ def main(argv: list[str] | None = None) -> None:
                 f'loss {train_metrics.loss:.3f} resolver_acc {train_metrics.resolver_accuracy:.3f} '
                 f'delete_acc {train_metrics.delete_accuracy:.3f} ({train_time:.1f}s)'
             )
+            bootstrap_text = '' if bootstrap is None else (
+                f'bootstrap {bootstrap.bootstrap_problems}/{len(problems)} problems (remaining {bootstrap.remaining}/{len(references)}) '
+                f'oracle_episodes {bootstrap.oracle_episodes} samples {bootstrap.bootstrap_samples}+{bootstrap.hindsight_samples} | '
+            )
             print(
-                f'iteration {iteration:3d} | collect solved {solved_fraction:.2f} goal_fraction {goal_fraction:.2f} '
+                f'iteration {iteration:3d}{" (warm-up)" if warmup else ""} | {bootstrap_text}'
+                f'collect solved {solved_fraction:.2f} goal_fraction {goal_fraction:.2f} '
                 f'skipped {collect.skipped_episodes} samples {collect.samples} rounds {collect.mean_rounds if collect.mean_rounds is not None else float("nan"):.1f} '
                 f'({collect.wall_time:.1f}s) | buffer {len(buffer)} | {train_text} | '
                 f'validation coverage {validation["coverage"]:.2f} rounds {validation["mean_rounds"]:.1f} length_ratio {ratio:.2f} '
                 f'cycling {validation["total_cycling_events"]}',
                 flush=True,
             )
-            extras = {'iteration': iteration, 'args': saved_args, 'validation': validation, 'collect': collect.to_dict()}
+            extras = {'iteration': iteration, 'args': saved_args, 'validation': validation, 'collect': collect.to_dict(),
+                      'bootstrap': record['bootstrap']}
             policy.save(args.output / 'latest.pt', extras)
             if is_better(validation, best):
                 best = validation

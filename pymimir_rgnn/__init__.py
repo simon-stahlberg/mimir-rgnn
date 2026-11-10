@@ -59,9 +59,9 @@ from .messages import PredicateMLPMessages, PredicateLinearMessages, SenderOnlyM
 from .model import ForwardState, RelationalGraphNeuralNetwork
 from .modules import MLP, SparseMLP, ChannelwiseAffine, SumReadout
 from .plan_space import (
-    PLAN_NODE_TYPES, CollectStats, EpochMetrics, ImitationTrainer, PartialPlanEncoder, PlanSpacePolicy, PlanSpaceSearch,
+    PLAN_NODE_TYPES, BootstrapStats, CollectStats, EpochMetrics, ImitationTrainer, PartialPlanEncoder, PlanSpacePolicy, PlanSpaceSearch,
     PolicyConfig, PolicyOutput, ReferenceCache, Sample, SearchOutcome, TrainingConfig, compute_reference_plan,
-    hindsight_collect, oracle_rollout, plan_from_strings, plan_to_strings,
+    bootstrap_collect, hindsight_collect, oracle_reaches_reference, oracle_rollout, plan_from_strings, plan_to_strings,
 )
 from .recurrence import NodeStateStore
 from .updates import MLPUpdates, LinearUpdates, SparseMLPUpdates, GRUUpdates
@@ -74,6 +74,8 @@ __all__ = [
     "AttentionMessages",
     "AttentionMessagesBase",
     "boundary_margin_penalty",
+    "BootstrapStats",
+    "bootstrap_collect",
     "ChannelwiseAffine",
     "CollectStats",
     "compute_reference_plan",
@@ -105,6 +107,7 @@ __all__ = [
     "NodeStateStore",
     "ObjectsEmbeddingDecoder",
     "ObjectsScalarDecoder",
+    "oracle_reaches_reference",
     "oracle_rollout",
     "PartialPlanEncoder",
     "plan_from_strings",
