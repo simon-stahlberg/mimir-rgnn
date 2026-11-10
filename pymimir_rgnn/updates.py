@@ -104,3 +104,37 @@ class SparseMLPUpdates(UpdateFunction):
             Updated node embeddings with the same shape as the input embeddings.
         """
         return self._update(torch.cat((aggregated_messages, node_embeddings), 1))
+
+
+class GRUUpdates(UpdateFunction):
+    """Update function using a gated recurrent unit for node embedding updates.
+
+    The aggregated messages are the GRU input and the current node embeddings are
+    its hidden state, so each node decides through learned gates how much of its
+    previous embedding to keep. The gating already carries the embedding across
+    layers; combine with ``residual_updates=False`` unless an additional residual
+    path is wanted.
+    """
+
+    supports_replay = True
+
+    def __init__(self, hparam_config: HyperparameterConfig):
+        """Initialize the GRU update function.
+
+        Args:
+            hparam_config: The hyperparameter configuration containing embedding sizes.
+        """
+        super().__init__()
+        self._update = torch.nn.GRUCell(hparam_config.embedding_size, hparam_config.embedding_size)
+
+    def forward(self, node_embeddings: torch.Tensor, aggregated_messages: torch.Tensor) -> torch.Tensor:
+        """Update node embeddings with one GRU step.
+
+        Args:
+            node_embeddings: The current node embeddings, used as the hidden state.
+            aggregated_messages: The aggregated messages, used as the input.
+
+        Returns:
+            Updated node embeddings with the same shape as the input embeddings.
+        """
+        return self._update(aggregated_messages, node_embeddings)

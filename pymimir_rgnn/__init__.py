@@ -53,12 +53,18 @@ Example:
 from .aggregations import HardMaximumAggregation, MeanAggregation, SmoothMaximumAggregation, SumAggregation
 from .bases import AggregationFunction, MessageFunction, UpdateFunction, Encoder, Decoder, QuantizationRecord
 from .configs import HyperparameterConfig, ModuleConfig
-from .decoders import ActionScalarDecoder, ActionEmbeddingDecoder, ObjectsScalarDecoder, ObjectsEmbeddingDecoder
+from .decoders import ActionScalarDecoder, ActionEmbeddingDecoder, ObjectsScalarDecoder, ObjectsEmbeddingDecoder, GroupedLogProbs, GroupedSoftmaxDecoder, NodeScalarDecoder, GlobalScalarDecoder
 from .encoders import EncoderRelation, EncoderRelationKind, StateEncoder, GoalEncoder, GroundActionsEncoder, TransitionEffectsEncoder, ExpressiveStateEncoder, ExpressiveGoalEncoder
 from .messages import PredicateMLPMessages, PredicateLinearMessages, SenderOnlyMLPMessages, SparseMLPMessages, AttentionMessages, AttentionMessagesBase
 from .model import ForwardState, RelationalGraphNeuralNetwork
 from .modules import MLP, SparseMLP, ChannelwiseAffine, SumReadout
-from .updates import MLPUpdates, LinearUpdates, SparseMLPUpdates
+from .plan_space import (
+    PLAN_NODE_TYPES, CollectStats, EpochMetrics, ImitationTrainer, PartialPlanEncoder, PlanSpacePolicy, PlanSpaceSearch,
+    PolicyConfig, PolicyOutput, ReferenceCache, Sample, SearchOutcome, TrainingConfig, compute_reference_plan,
+    hindsight_collect, oracle_rollout, plan_from_strings, plan_to_strings,
+)
+from .recurrence import NodeStateStore
+from .updates import MLPUpdates, LinearUpdates, SparseMLPUpdates, GRUUpdates
 from .utils import boundary_margin_penalty
 
 __all__ = [
@@ -67,30 +73,54 @@ __all__ = [
     "AggregationFunction",
     "AttentionMessages",
     "AttentionMessagesBase",
+    "boundary_margin_penalty",
     "ChannelwiseAffine",
+    "CollectStats",
+    "compute_reference_plan",
     "Decoder",
     "Encoder",
     "EncoderRelation",
     "EncoderRelationKind",
+    "EpochMetrics",
     "ExpressiveGoalEncoder",
     "ExpressiveStateEncoder",
     "ForwardState",
+    "GlobalScalarDecoder",
     "GoalEncoder",
     "GroundActionsEncoder",
+    "GroupedLogProbs",
+    "GroupedSoftmaxDecoder",
+    "GRUUpdates",
     "HardMaximumAggregation",
+    "hindsight_collect",
     "HyperparameterConfig",
+    "ImitationTrainer",
     "LinearUpdates",
     "MeanAggregation",
     "MessageFunction",
     "MLP",
     "MLPUpdates",
     "ModuleConfig",
+    "NodeScalarDecoder",
+    "NodeStateStore",
     "ObjectsEmbeddingDecoder",
     "ObjectsScalarDecoder",
+    "oracle_rollout",
+    "PartialPlanEncoder",
+    "plan_from_strings",
+    "PLAN_NODE_TYPES",
+    "plan_to_strings",
+    "PlanSpacePolicy",
+    "PlanSpaceSearch",
+    "PolicyConfig",
+    "PolicyOutput",
     "PredicateLinearMessages",
     "PredicateMLPMessages",
     "QuantizationRecord",
+    "ReferenceCache",
     "RelationalGraphNeuralNetwork",
+    "Sample",
+    "SearchOutcome",
     "SenderOnlyMLPMessages",
     "SmoothMaximumAggregation",
     "SparseMLP",
@@ -99,7 +129,7 @@ __all__ = [
     "StateEncoder",
     "SumAggregation",
     "SumReadout",
+    "TrainingConfig",
     "TransitionEffectsEncoder",
     "UpdateFunction",
-    "boundary_margin_penalty",
 ]

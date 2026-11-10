@@ -38,6 +38,9 @@ class EncodedLists:
         self.virtual_indices: list[int] = []
         self.auxiliary_sizes: list[int] = []
         self.auxiliary_indices: list[int] = []
+        # Arbitrary per-batch metadata written by custom encoders (Python lists
+        # or tensors), carried unchanged to EncodedTensors for decoders and callers.
+        self.extras: dict[str, Any] = {}
 
 
 class EncodedTensors:
@@ -66,6 +69,9 @@ class EncodedTensors:
         self.virtual_indices: torch.Tensor = torch.LongTensor()
         self.auxiliary_sizes: torch.Tensor = torch.LongTensor()
         self.auxiliary_indices: torch.Tensor = torch.LongTensor()
+        # Arbitrary per-batch metadata from custom encoders, copied from EncodedLists
+        # without conversion; decoders such as NodeScalarDecoder read it by key.
+        self.extras: dict[str, Any] = {}
 
 
 class Encoder(ABC):

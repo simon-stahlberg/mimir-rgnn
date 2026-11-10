@@ -174,13 +174,26 @@ registered, and messages and updates are not quantized; otherwise every layer
 runs as usual.
 
 `PredicateMLPMessages`, `PredicateLinearMessages`, all aggregation functions,
-`MLPUpdates` and `LinearUpdates` support replay. A custom function may set
+`MLPUpdates`, `LinearUpdates` and `GRUUpdates` support replay. A custom function may set
 `supports_replay = True` if its `forward` runs the same operations in every
 layer, independent of the layer, never synchronizes with the host (no
 `.item()`, no `.cpu()`, no indexing with Python lists, no shapes that depend
 on tensor values), and draws no random numbers. A recording that synchronizes
 fails with an error; one that depends on the layer would silently repeat the
 first layer's behavior.
+
+### Plan-Space Policy
+
+`pymimir_rgnn.plan_space` turns the R-GNN into a local-search policy over
+partial-order plans (`pymimir.PartialOrderPlan`): `PartialPlanEncoder` encodes a
+plan with its flaws and resolvers next to the state and goal, `PlanSpacePolicy`
+adds a grouped softmax over each flaw's resolvers (index 0 is NoOp) and a delete
+logit per step, `PlanSpaceSearch` edits the empty plan round by round until it
+is a solution, `oracle_rollout` records imitation samples from a reference plan
+and `ImitationTrainer` fits the policy to them (optionally with DAgger, or
+round by round with carried embeddings through `NodeStateStore` when the policy
+is recurrent). The scripts in `scripts/plan_space/` and the Slurm templates in
+`slurm/` run the full pipeline; see `scripts/plan_space/README.md`.
 
 ## Examples and Tutorials
 

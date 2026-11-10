@@ -600,6 +600,8 @@ def get_input_from_encoders(input: list[tuple], input_specification: tuple[Encod
     )
     encoding_tensors.node_count = encoding_lists.node_count
     encoding_tensors.action_counts = tuple(encoding_lists.action_sizes)
+    # Extras are passed through as written; custom encoders decide their format.
+    encoding_tensors.extras = encoding_lists.extras
     return encoding_tensors
 
 
