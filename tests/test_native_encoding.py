@@ -458,6 +458,40 @@ def test_packed_relation_encoding_is_torch_serializable() -> None:
     )
 
 
+class _CustomExtrasEncoder(Encoder):
+    """Lists the auxiliary node it allocates for every instance under ``extras``."""
+
+    def get_relations(self, domain: mm.Domain) -> list[tuple[str, int]]:
+        return []
+
+    def encode(
+        self,
+        input_value: Any,
+        state: mm.State,
+        encoding: EncodedLists,
+        context: EncodingContext,
+    ) -> None:
+        auxiliary_id = context.new_or_existing_auxiliary_id(("custom", input_value))
+        encoding.extras.setdefault("custom_nodes", []).append(torch.tensor([auxiliary_id]))
+
+
+def test_extras_of_custom_encoders_are_carried_to_the_encoded_tensors() -> None:
+    domain = mm.Domain.from_file(DATA_DIR / "gripper" / "domain.pddl")
+    problem = mm.Problem.from_file(domain, DATA_DIR / "gripper" / "problem.pddl")
+    state = problem.initial_state
+
+    encoded = get_input_from_encoders(
+        [(state, 90), (state, 91)],
+        (StateEncoder(), _CustomExtrasEncoder()),
+        CPU,
+    )
+
+    object_count = len(problem.all_objects)
+    # The auxiliary node of an instance comes after its objects.
+    assert [nodes.tolist() for nodes in encoded.extras["custom_nodes"]] == [[object_count], [2 * object_count + 1]]
+    assert get_input_from_encoders([(state,)], (StateEncoder(),), CPU).extras == {}
+
+
 def test_custom_relation_collision_preserves_custom_then_native_order() -> None:
     domain = mm.Domain.from_file(DATA_DIR / "gripper" / "domain.pddl")
     problem = mm.Problem.from_file(domain, DATA_DIR / "gripper" / "problem.pddl")

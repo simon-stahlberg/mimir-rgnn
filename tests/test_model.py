@@ -818,6 +818,45 @@ def test_predicate_linear_messages_ternarizes_and_records_quantization():
     assert set(torch.unique(output_messages).tolist()).issubset({-1.0, 0.0, 1.0})
 
 
+def test_gru_updates_forward_model():
+    domain_path = DATA_DIR / 'blocks' / 'domain.pddl'
+    problem_path = DATA_DIR / 'blocks' / 'problem.pddl'
+    domain = mm.Domain.from_file(domain_path)
+    problem = mm.Problem.from_file(domain, problem_path)
+    # The gates of the GRU already carry the embedding across layers.
+    hparam_config = HyperparameterConfig(
+        domain=domain,
+        num_layers=2,
+        embedding_size=4,
+        residual_updates=False,
+    )
+    input_spec = (StateEncoder(), GoalEncoder())
+    output_spec = [('value', ObjectsScalarDecoder(hparam_config))]
+    module_config = ModuleConfig(
+        aggregation_function=MeanAggregation(),
+        message_function=PredicateMLPMessages(hparam_config, input_spec),
+        update_function=GRUUpdates(hparam_config)
+    )
+    model = RelationalGraphNeuralNetwork(hparam_config, module_config, input_spec, output_spec)  # type: ignore
+    value = model.forward([(problem.initial_state, problem.goal)]).readout('value')
+    assert value.shape == (1,)
+    assert not torch.isnan(value).any()
+    value.sum().backward()
+    gradient = module_config.update_function._update.weight_ih.grad
+    assert gradient is not None and gradient.abs().sum() > 0
+
+
+def test_gru_updates_match_a_gru_cell_step():
+    domain = mm.Domain.from_file(DATA_DIR / 'blocks' / 'domain.pddl')
+    gru_updates = GRUUpdates(HyperparameterConfig(domain=domain, embedding_size=5))
+    node_embeddings = torch.randn(7, 5)
+    aggregated_messages = torch.randn(7, 5)
+
+    # The messages are the input of the cell and the embeddings its hidden state.
+    assert torch.allclose(gru_updates(node_embeddings, aggregated_messages), gru_updates._update(aggregated_messages, node_embeddings))
+    assert gru_updates(torch.empty(0, 5), torch.empty(0, 5)).shape == (0, 5)
+
+
 def test_linear_updates_matches_underlying_linear_layer():
     domain_path = DATA_DIR / 'blocks' / 'domain.pddl'
     domain = mm.Domain.from_file(domain_path)
@@ -1331,7 +1370,7 @@ def test_replayed_layers_give_the_outputs_of_running_every_layer(monkeypatch: py
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="replaying layers needs CUDA")
 @pytest.mark.parametrize("messages", [PredicateMLPMessages, PredicateLinearMessages])
 @pytest.mark.parametrize("aggregation", [SumAggregation, MeanAggregation, HardMaximumAggregation, SmoothMaximumAggregation])
-@pytest.mark.parametrize("updates", [MLPUpdates, LinearUpdates])
+@pytest.mark.parametrize("updates", [MLPUpdates, LinearUpdates, GRUUpdates])
 def test_functions_that_support_replay_give_the_outputs_of_running_every_layer(monkeypatch: pytest.MonkeyPatch, messages: type,
                                                                                 aggregation: type, updates: type):
     domain, inputs = _q_value_inputs('gripper')

@@ -44,45 +44,16 @@ class ForwardState:
         layer_index: int,
         readouts: dict[str, Callable[[], Any]],
         quantization_records: tuple[QuantizationRecord, ...] = (),
-        node_embeddings: torch.Tensor | None = None,
-        encoding: EncodedTensors | None = None,
     ):
         """Initialize the forward state.
 
         Args:
             layer_index: The current layer index in the forward pass.
             readouts: Dictionary of named readout functions for extracting outputs.
-            quantization_records: Quantization records of the layer(s) this state covers.
-            node_embeddings: The node embeddings after the layer of this state.
-            encoding: The encoded input the embeddings belong to.
         """
         self._layer_index = layer_index
         self._readouts = readouts
         self._quantization_records = quantization_records
-        self._node_embeddings = node_embeddings
-        self._encoding = encoding
-
-    @property
-    def node_embeddings(self) -> torch.Tensor:
-        """The node embeddings after the layer of this state, of shape (node_count, embedding_size).
-
-        Raises:
-            RuntimeError: If the state was created without node embeddings.
-        """
-        if self._node_embeddings is None:
-            raise RuntimeError('This forward state has no node embeddings.')
-        return self._node_embeddings
-
-    @property
-    def encoding(self) -> EncodedTensors:
-        """The encoded input the node embeddings belong to.
-
-        Raises:
-            RuntimeError: If the state was created without an encoding.
-        """
-        if self._encoding is None:
-            raise RuntimeError('This forward state has no encoding.')
-        return self._encoding
 
     def get_layer_index(self) -> int:
         """Get the current layer index.
@@ -303,8 +274,7 @@ class RelationalLayerStackModule(nn.Module):
         """Record the first layer as a CUDA graph and replay it for every layer.
 
         All layers have the same operations on the same shapes, so one recording serves them all; it is not kept,
-        as the next input has other shapes. The recording reads the embeddings from a buffer that is initialized
-        from `node_embeddings`, so carried (non-zero) initial embeddings are replayed like zero ones.
+        as the next input has other shapes.
         """
         embeddings = node_embeddings.clone()
         if not hasattr(_replay_resources, 'by_device'):
@@ -457,7 +427,7 @@ class RelationalGraphNeuralNetwork(nn.Module):
         """
         return self._dummy.device
 
-    def _internal_forward(self, input: 'EncodedTensors', initial_embeddings: torch.Tensor | None = None) -> ForwardState:
+    def _internal_forward(self, input: 'EncodedTensors') -> ForwardState:
         """Run the neural network computation phase of the forward pass.
 
         This private method contains the shared logic for running the MPNN forward pass
@@ -465,9 +435,6 @@ class RelationalGraphNeuralNetwork(nn.Module):
 
         Args:
             input: The encoded tensors from the input encoders.
-            initial_embeddings: Initial node embeddings of shape (node_count, embedding_size)
-                                replacing the zero initialization, e.g. embeddings carried
-                                over from an earlier forward pass. Gradients flow through them.
 
         Returns:
             ForwardState object containing the final layer index and readout functions.
@@ -479,22 +446,13 @@ class RelationalGraphNeuralNetwork(nn.Module):
                 def make_readout_func(readout: Any) -> Callable[[], Any]:
                     return lambda: readout(node_embeddings, input)
                 curried_readouts = { name: make_readout_func(readout) for name, readout in self._readouts.items() }
-                forward_state = ForwardState(layer_index, curried_readouts, self._mpnn_module.layer_quantization_records(),
-                                             node_embeddings, input)
+                forward_state = ForwardState(layer_index, curried_readouts, self._mpnn_module.layer_quantization_records())
                 self._notify_hooks(forward_state)
             self._mpnn_module.add_hook(hook_function)
-        if initial_embeddings is None:
-            node_embeddings = self._dummy.new_zeros(
-                (input.node_count, self._hparam_config.embedding_size),
-                requires_grad=False,
-            )
-        else:
-            expected_shape = (input.node_count, self._hparam_config.embedding_size)
-            assert tuple(initial_embeddings.shape) == expected_shape, (
-                f'Expected initial embeddings of shape {expected_shape}, got {tuple(initial_embeddings.shape)}.'
-            )
-            # Carried embeddings keep their autograd graph so that gradients reach where they came from.
-            node_embeddings = initial_embeddings.to(device=self._dummy.device, dtype=self._dummy.dtype)
+        node_embeddings = self._dummy.new_zeros(
+            (input.node_count, self._hparam_config.embedding_size),
+            requires_grad=False,
+        )
         node_embeddings = self._mpnn_module(input, node_embeddings)
         self._latest_quantization_records = self._mpnn_module.quantization_records()
         if len(self._hooks) > 0:
@@ -502,18 +460,14 @@ class RelationalGraphNeuralNetwork(nn.Module):
         def make_readout_func(readout: Any) -> Callable[[], Any]:
             return lambda: readout(node_embeddings, input)
         curried_readouts = { name: make_readout_func(readout) for name, readout in self._readouts.items() }
-        return ForwardState(self._hparam_config.num_layers - 1, curried_readouts, self._latest_quantization_records,
-                            node_embeddings, input)
+        return ForwardState(self._hparam_config.num_layers - 1, curried_readouts, self._latest_quantization_records)
 
-    def forward(self, x: list[tuple], initial_embeddings: torch.Tensor | None = None) -> ForwardState:  # type: ignore
+    def forward(self, x: list[tuple]) -> ForwardState:  # type: ignore
         """Perform a forward pass through the R-GNN.
 
         Args:
             x: List of input tuples, where each tuple contains the inputs specified
                by the input_spec (e.g., state, goal, actions).
-            initial_embeddings: Optional initial node embeddings of shape
-                                (node_count, embedding_size) replacing the zero
-                                initialization; see NodeStateStore for building them.
 
         Returns:
             ForwardState object containing the final layer index and readout functions
@@ -521,35 +475,9 @@ class RelationalGraphNeuralNetwork(nn.Module):
         """
         assert isinstance(x, list), 'Expected input to be a list.'
         input = get_input_from_encoders(x, self._input_spec, self.get_device())
-        return self._internal_forward(input, initial_embeddings)
+        return self._internal_forward(input)
 
-    def encode(self, x: list[tuple]) -> EncodedTensors:
-        """Encode a batch of inputs without running the message passing.
-
-        Args:
-            x: List of input tuples, where each tuple contains the inputs specified
-               by the input_spec (e.g., state, goal, actions).
-
-        Returns:
-            The encoded tensors on the model's device, e.g. to build initial embeddings from.
-        """
-        assert isinstance(x, list), 'Expected input to be a list.'
-        return get_input_from_encoders(x, self._input_spec, self.get_device())
-
-    def forward_encoded(self, input: EncodedTensors, initial_embeddings: torch.Tensor | None = None) -> ForwardState:
-        """Run the message passing on an already encoded batch, see `encode`.
-
-        Args:
-            input: The encoded tensors of the batch.
-            initial_embeddings: Optional initial node embeddings of shape
-                                (node_count, embedding_size) replacing the zero initialization.
-
-        Returns:
-            ForwardState object containing the final layer index and readout functions.
-        """
-        return self._internal_forward(input, initial_embeddings)
-
-    def curry_forward(self, x: list[tuple]) -> Callable[..., ForwardState]:
+    def curry_forward(self, x: list[tuple]) -> Callable[[], ForwardState]:
         """Return a lambda that performs a forward pass through the R-GNN.
 
         This method precomputes the encoded tensors but delays the MPNN computation
@@ -561,16 +489,15 @@ class RelationalGraphNeuralNetwork(nn.Module):
                by the input_spec (e.g., state, goal, actions).
 
         Returns:
-            A function that when called, optionally with initial node embeddings of
-            shape (node_count, embedding_size), returns a ForwardState object containing
+            A lambda function that when called returns a ForwardState object containing
             the final layer index and readout functions for extracting outputs.
         """
         assert isinstance(x, list), 'Expected input to be a list.'
         input = get_input_from_encoders(x, self._input_spec, self.get_device())
 
         # Define a curried function that captures the input and runs the internal forward pass.
-        def curried_forward(initial_embeddings: torch.Tensor | None = None) -> ForwardState:
-            return self._internal_forward(input, initial_embeddings)
+        def curried_forward() -> ForwardState:
+            return self._internal_forward(input)
 
         return curried_forward
 
