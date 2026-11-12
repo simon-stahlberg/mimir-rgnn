@@ -184,16 +184,14 @@ first layer's behavior.
 
 ### Plan-Space Policy
 
-`pymimir_rgnn.plan_space` turns the R-GNN into a local-search policy over
-partial-order plans (`pymimir.PartialOrderPlan`): `PartialPlanEncoder` encodes a
-plan with its flaws and resolvers next to the state and goal, `PlanSpacePolicy`
-adds a grouped softmax over each flaw's resolvers (index 0 is NoOp) and a delete
-logit per step, `PlanSpaceSearch` edits the empty plan round by round until it
-is a solution, `oracle_rollout` records imitation samples from a reference plan
-and `ImitationTrainer` fits the policy to them (optionally with DAgger, or
-round by round with carried embeddings through `NodeStateStore` when the policy
-is recurrent). The scripts in `scripts/plan_space/` and the Slurm templates in
-`slurm/` run the full pipeline; see `scripts/plan_space/README.md`.
+`pymimir_rgnn.serial_plan` turns the R-GNN into a local-search policy over
+serial plans (`pymimir.SerialPlan`): `SerialPlanEncoder` encodes a plan with its
+errors and repairs next to the state and goal, `SerialPolicy` adds a grouped
+softmax over each error's repairs (index 0 is NoOp) and a delete logit per
+step, `SerialSearch` edits the empty plan in parallel rounds until it is a
+solution, and `serial_collect` and `SerialTrainer` train the policy by hindsight
+expert iteration. The scripts in `scripts/plan_space/` and the Slurm templates
+in `slurm/` run the full pipeline; see `scripts/plan_space/README.md`.
 
 ## Examples and Tutorials
 

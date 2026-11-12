@@ -7,10 +7,9 @@ parameters. The plan is edited in parallel rounds: every error picks one of its
 repairs (index 0 is NoOp) and every step gets a delete decision. The plan is a
 solution once no errors remain.
 
-This module is the serial counterpart of :mod:`pymimir_rgnn.plan_space` and is
-kept separate from it on purpose: the encoder, the policy with its two heads,
-the search driver, the data collection for hindsight expert iteration with a
-bootstrap from :func:`pymimir.serial_search` references, and the trainer.
+This module holds the encoder, the policy with its two heads, the search driver,
+the data collection for hindsight expert iteration with a bootstrap from
+:func:`pymimir.serial_search` references, and the trainer.
 """
 
 from __future__ import annotations
@@ -27,14 +26,15 @@ import pymimir as mm
 import torch
 import torch.nn as nn
 
-from .bases import EncodedLists, Encoder, EncodingContext
+from .aggregations import HardMaximumAggregation, MeanAggregation, SmoothMaximumAggregation, SumAggregation
+from .bases import AggregationFunction, EncodedLists, Encoder, EncodingContext, UpdateFunction
 from .configs import HyperparameterConfig, ModuleConfig
 from .decoders import OBJECTS_CONTEXT, GroupedLogProbs, GroupedSoftmaxDecoder, NodeScalarDecoder
 from .encoders import GoalEncoder, StateEncoder
 from .messages import PredicateMLPMessages
 from .model import RelationalGraphNeuralNetwork
 from .modules import POOLINGS, Pooling
-from .plan_space import _aggregation, _update
+from .updates import GRUUpdates, MLPUpdates
 
 SerialItem = tuple[mm.SerialPlan, mm.SerialDiagnosis]
 
@@ -120,6 +120,26 @@ class SerialPolicyConfig:
                 raise ValueError(f'Unknown {head} contexts {unknown}; expected a subset of {allowed}.')
         if self.context_pooling not in POOLINGS:
             raise ValueError(f'context_pooling must be one of {POOLINGS}, got {self.context_pooling!r}.')
+
+
+def _aggregation(name: str) -> AggregationFunction:
+    if name == 'mean':
+        return MeanAggregation()
+    if name == 'sum':
+        return SumAggregation()
+    if name == 'max':
+        return HardMaximumAggregation()
+    if name == 'smooth_max':
+        return SmoothMaximumAggregation()
+    raise ValueError(f'Unknown aggregation {name!r}.')
+
+
+def _update(name: str, hparams: HyperparameterConfig) -> UpdateFunction:
+    if name == 'mlp':
+        return MLPUpdates(hparams)
+    if name == 'gru':
+        return GRUUpdates(hparams)
+    raise ValueError(f'Unknown update function {name!r}.')
 
 
 @dataclass

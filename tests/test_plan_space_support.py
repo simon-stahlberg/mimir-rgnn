@@ -1,6 +1,6 @@
-"""Tests of the generic model support for plan-space (partial-order plan) search.
+"""Tests of the generic model support for plan-space search.
 
-A stub encoder stands in for the native partial-plan encoder: per instance it
+A stub encoder stands in for a native plan encoder: per instance it
 allocates auxiliary "flaw" nodes with several "resolver" nodes each, writes the
 relation ``resolves(resolver, flaw)`` with unary marks, and lists the flaw nodes
 under ``extras``.

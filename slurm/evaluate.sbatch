@@ -1,7 +1,7 @@
 #!/bin/bash
-# Evaluate a trained plan-space policy with scripts/plan_space/evaluate.py on a Slurm cluster.
+# Evaluate a trained serial plan policy with scripts/plan_space/evaluate_serial.py on a Slurm cluster.
 #
-#   sbatch --export=ALL,DOMAIN_DIR=data/gripper,CHECKPOINT=runs/gripper/best.pt,EXTRA_ARGS="--max-rounds 200" \
+#   sbatch --export=ALL,DOMAIN_DIR=data/gripper,CHECKPOINT=runs/gripper/best.pt,EXTRA_ARGS="--max-rounds 60" \
 #       --partition=<partition> slurm/evaluate.sbatch
 #
 # Variables:
@@ -11,7 +11,7 @@
 #   OUTPUT      run folder; results.json is written to ${RESULTS:-${OUTPUT}/results.json}
 #   PROBLEMS    problem folder (default ${DOMAIN_DIR}/test)
 #   DEVICE      torch device (default: cuda when a GPU is allocated, else cpu)
-#   EXTRA_ARGS  additional evaluate.py arguments (default empty)
+#   EXTRA_ARGS  additional evaluate_serial.py arguments (default empty)
 #
 # Resource defaults (override with sbatch --partition/--time/--mem/--cpus-per-task/--gres):
 #SBATCH --job-name=plan-space-eval
@@ -43,7 +43,7 @@ export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-1}"
 
 echo "host $(hostname) job ${SLURM_JOB_ID:-local} checkpoint ${CHECKPOINT} problems ${PROBLEMS} device ${DEVICE}"
 # shellcheck disable=SC2086
-python scripts/plan_space/evaluate.py \
+python scripts/plan_space/evaluate_serial.py \
     --checkpoint "${CHECKPOINT}" \
     --domain-dir "${DOMAIN_DIR}" \
     --problems "${PROBLEMS}" \
