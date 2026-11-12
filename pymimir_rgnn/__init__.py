@@ -59,10 +59,6 @@ from .messages import PredicateMLPMessages, PredicateLinearMessages, SenderOnlyM
 from .model import ForwardState, RelationalGraphNeuralNetwork
 from .modules import MLP, SparseMLP, ChannelwiseAffine, SumReadout, PooledReadout, Pooling, pool_by_index
 from .recurrence import NodeStateStore
-from .serial_plan import (
-    SerialCollectStats, SerialEpochMetrics, SerialPlanEncoder, SerialPolicy, SerialPolicyConfig, SerialPolicyOutput, SerialSample,
-    SerialSearch, SerialSearchOutcome, SerialTrainer, is_valid_plan, serial_collect, serial_oracle_rollout, serial_references,
-)
 from .updates import MLPUpdates, LinearUpdates, SparseMLPUpdates, GRUUpdates
 from .utils import boundary_margin_penalty
 
@@ -89,7 +85,6 @@ __all__ = [
     "GRUUpdates",
     "HardMaximumAggregation",
     "HyperparameterConfig",
-    "is_valid_plan",
     "LinearUpdates",
     "MeanAggregation",
     "MessageFunction",
@@ -108,19 +103,6 @@ __all__ = [
     "QuantizationRecord",
     "RelationalGraphNeuralNetwork",
     "SenderOnlyMLPMessages",
-    "serial_collect",
-    "serial_oracle_rollout",
-    "serial_references",
-    "SerialCollectStats",
-    "SerialEpochMetrics",
-    "SerialPlanEncoder",
-    "SerialPolicy",
-    "SerialPolicyConfig",
-    "SerialPolicyOutput",
-    "SerialSample",
-    "SerialSearch",
-    "SerialSearchOutcome",
-    "SerialTrainer",
     "SmoothMaximumAggregation",
     "SparseMLP",
     "SparseMLPMessages",

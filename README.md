@@ -182,17 +182,6 @@ on tensor values), and draws no random numbers. A recording that synchronizes
 fails with an error; one that depends on the layer would silently repeat the
 first layer's behavior.
 
-### Plan-Space Policy
-
-`pymimir_rgnn.serial_plan` turns the R-GNN into a local-search policy over
-serial plans (`pymimir.SerialPlan`): `SerialPlanEncoder` encodes a plan with its
-errors and repairs next to the state and goal, `SerialPolicy` adds a grouped
-softmax over each error's repairs (index 0 is NoOp) and a delete logit per
-step, `SerialSearch` edits the empty plan in parallel rounds until it is a
-solution, and `serial_collect` and `SerialTrainer` train the policy by hindsight
-expert iteration. The scripts in `scripts/plan_space/` and the Slurm templates
-in `slurm/` run the full pipeline; see `scripts/plan_space/README.md`.
-
 ## Examples and Tutorials
 
 For an comprehensive example, visit:
