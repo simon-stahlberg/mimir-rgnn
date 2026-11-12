@@ -24,6 +24,11 @@ DAgger-style labelling of the policy's own episodes,
 ``--bootstrap-phase-out`` times, after which they take the hindsight path.
 ``--bootstrap-iterations`` prepends pure oracle-rollout warm-up iterations.
 
+Model options: ``--resolver-contexts`` and ``--delete-contexts`` give the two
+heads pooled contexts of the instance (``objects``, ``steps``, ``flaws`` and for
+the resolver head ``siblings``; comma-separated, ``none`` for no context) pooled
+with ``--context-pooling``.
+
 Example:
     python scripts/plan_space/train_hei.py --domain-dir data/blocks --output runs/blocks_hei --iterations 12
     python scripts/plan_space/train_hei.py --domain-dir data/blocks --output runs/blocks_hei --init-from runs/blocks/best.pt
@@ -38,7 +43,7 @@ import random
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
 import pymimir as mm
 import torch
@@ -52,6 +57,7 @@ from pymimir_rgnn import (  # noqa: E402
     PlanSpacePolicy,
     PlanSpaceSearch,
     PolicyConfig,
+    Pooling,
     ReferenceCache,
     Sample,
     TrainingConfig,
@@ -59,6 +65,12 @@ from pymimir_rgnn import (  # noqa: E402
     hindsight_collect,
     oracle_reaches_reference,
 )
+
+
+def parse_contexts(value: str) -> tuple[str, ...]:
+    """Comma-separated context names; ``none`` (or an empty string) is no context."""
+    names = tuple(name.strip() for name in value.split(',') if name.strip())
+    return () if names == ('none',) else names
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -79,6 +91,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--aggregation', choices=['mean', 'sum', 'max', 'smooth_max'], default='mean')
     parser.add_argument('--update', choices=['mlp', 'gru'], default='mlp')
     parser.add_argument('--recurrent', action='store_true', help='carry node embeddings across rounds (NodeStateStore)')
+    parser.add_argument('--resolver-contexts', type=parse_contexts, default=('objects', 'steps', 'flaws', 'siblings'),
+                        help='comma-separated pooled contexts of the resolver head: objects, steps, flaws, siblings; none for no '
+                             'context (default: objects,steps,flaws,siblings)')
+    parser.add_argument('--delete-contexts', type=parse_contexts, default=('objects', 'steps', 'flaws'),
+                        help='comma-separated pooled contexts of the delete head: objects, steps, flaws; none for no context '
+                             '(default: objects,steps,flaws)')
+    parser.add_argument('--context-pooling', choices=get_args(Pooling), default='maxmean', help='pooling of the head contexts')
     parser.add_argument('--tombstone-capacity', type=int, default=0)
     parser.add_argument('--tombstone-lifespan', type=int, default=0)
     parser.add_argument('--max-rounds', type=int, default=50, help='round budget of rollouts and validation')
@@ -176,12 +195,21 @@ def build_policy(domain: mm.Domain, args: argparse.Namespace, device: torch.devi
         aggregation=args.aggregation,
         update=args.update,
         recurrent=args.recurrent,
+        resolver_contexts=args.resolver_contexts,
+        delete_contexts=args.delete_contexts,
+        context_pooling=args.context_pooling,
     )
     return PlanSpacePolicy(domain, config).to(device)
 
 
 def main(argv: list[str] | None = None) -> None:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.init_from is None:
+        try:
+            PolicyConfig(resolver_contexts=args.resolver_contexts, delete_contexts=args.delete_contexts)
+        except ValueError as error:
+            parser.error(str(error))
     torch.manual_seed(args.seed)
     rng = random.Random(args.seed)
     device = torch.device(args.device)

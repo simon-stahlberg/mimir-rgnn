@@ -27,10 +27,11 @@ from pymimir.heuristics import Heuristic
 from .aggregations import HardMaximumAggregation, MeanAggregation, SmoothMaximumAggregation, SumAggregation
 from .bases import AggregationFunction, EncodedLists, EncodedTensors, Encoder, EncodingContext, UpdateFunction
 from .configs import HyperparameterConfig, ModuleConfig
-from .decoders import GroupedLogProbs, GroupedSoftmaxDecoder, NodeScalarDecoder
+from .decoders import OBJECTS_CONTEXT, GroupedLogProbs, GroupedSoftmaxDecoder, NodeScalarDecoder
 from .encoders import GoalEncoder, StateEncoder
 from .messages import PredicateMLPMessages
 from .model import RelationalGraphNeuralNetwork
+from .modules import POOLINGS, Pooling
 from .recurrence import NodeKey, NodeStateStore
 from .updates import GRUUpdates, MLPUpdates
 
@@ -67,7 +68,9 @@ class PartialPlanEncoder(Encoder):
       ``('link', id)``) and None for ghosts, flaws, resolvers and tombstones,
     - ``plan_node_types``: per node of the instance, one of :data:`PLAN_NODE_TYPES`,
     - ``plan_step_nodes``: LongTensor of the node ids of the Step-kind steps, in
-      the order of ``plan.steps``, for :class:`NodeScalarDecoder`.
+      the order of ``plan.steps``, for :class:`NodeScalarDecoder`,
+    - ``plan_flaw_nodes``: LongTensor of the node ids of the flaws, in the order
+      of ``flaws.flaws``, e.g. as a decoder context.
 
     The keys and types cover the nodes allocated up to and including this
     encoder, so it must be the last node-allocating encoder of the input spec.
@@ -77,6 +80,7 @@ class PartialPlanEncoder(Encoder):
     NODE_KEYS = 'plan_node_keys'
     NODE_TYPES = 'plan_node_types'
     STEP_NODES = 'plan_step_nodes'
+    FLAW_NODES = 'plan_flaw_nodes'
 
     def __init__(self, suffix: str = '') -> None:
         super().__init__()
@@ -142,6 +146,7 @@ class PartialPlanEncoder(Encoder):
         encoding.extras.setdefault(self.NODE_KEYS, []).append(keys)
         encoding.extras.setdefault(self.NODE_TYPES, []).append(types)
         encoding.extras.setdefault(self.STEP_NODES, []).append(torch.tensor(step_nodes, dtype=torch.long))
+        encoding.extras.setdefault(self.FLAW_NODES, []).append(torch.tensor(list(layout.flaw_node_ids), dtype=torch.long))
 
 
 @dataclass
@@ -181,9 +186,28 @@ class PolicyOutput:
         return [bool(value) for value in (draws < probs).tolist()]
 
 
+# The node groups of an instance a head can pool as a context, by their name in a PolicyConfig: the decoder's name
+# of the group, i.e. 'objects' or the key of the encoding extras that lists its nodes.
+HEAD_CONTEXTS: dict[str, str] = {
+    'objects': OBJECTS_CONTEXT,
+    'steps': PartialPlanEncoder.STEP_NODES,
+    'flaws': PartialPlanEncoder.FLAW_NODES,
+}
+# The resolver head can additionally pool the resolvers competing for the same flaw.
+SIBLINGS_CONTEXT = 'siblings'
+
+
 @dataclass
 class PolicyConfig:
-    """Architecture flags of a :class:`PlanSpacePolicy`; serialized into checkpoints."""
+    """Architecture flags of a :class:`PlanSpacePolicy`; serialized into checkpoints.
+
+    ``resolver_contexts`` and ``delete_contexts`` name the node groups of the
+    instance whose pooled embeddings the resolver head and the delete head see
+    next to the node they score: ``'objects'``, ``'steps'`` (the Step-kind steps)
+    and ``'flaws'``, and for the resolver head also ``'siblings'`` (the resolvers
+    of the same flaw). ``context_pooling`` is how they are pooled: ``'sum'``,
+    ``'mean'``, ``'max'`` or ``'maxmean'``.
+    """
 
     embedding_size: int = 32
     num_layers: int = 10
@@ -195,6 +219,28 @@ class PolicyConfig:
     # None picks the natural default: residual updates for the MLP, none for the GRU, whose gates already carry the
     # embedding across layers.
     residual_updates: bool | None = None
+    resolver_contexts: tuple[str, ...] = ('objects', 'steps', 'flaws', 'siblings')
+    delete_contexts: tuple[str, ...] = ('objects', 'steps', 'flaws')
+    context_pooling: Pooling = 'maxmean'
+
+    def __post_init__(self) -> None:
+        assert not isinstance(self.resolver_contexts, str) and not isinstance(self.delete_contexts, str), (
+            'The contexts must be sequences of context names, not single strings.'
+        )
+        # Checkpoints and command lines hand in lists; tuples keep configs comparable.
+        self.resolver_contexts = tuple(self.resolver_contexts)
+        self.delete_contexts = tuple(self.delete_contexts)
+        for head, contexts, allowed in (
+            ('resolver', self.resolver_contexts, (*HEAD_CONTEXTS, SIBLINGS_CONTEXT)),
+            ('delete', self.delete_contexts, tuple(HEAD_CONTEXTS)),
+        ):
+            unknown = [name for name in contexts if name not in allowed]
+            if unknown:
+                raise ValueError(f'Unknown {head} contexts {unknown}; expected a subset of {allowed}.')
+            if len(set(contexts)) != len(contexts):
+                raise ValueError(f'The {head} contexts must be distinct, got {contexts}.')
+        if self.context_pooling not in POOLINGS:
+            raise ValueError(f'context_pooling must be one of {POOLINGS}, got {self.context_pooling!r}.')
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -249,9 +295,21 @@ class PlanSpacePolicy(nn.Module):
             normalize_updates=self.config.normalize_updates,
             residual_updates=residual,
         )
+        pooling = self.config.context_pooling
         output_spec = [
-            ('resolver_log_probs', GroupedSoftmaxDecoder(hparams, self.plan_encoder.resolves_relation)),
-            ('delete_logits', NodeScalarDecoder(hparams, PartialPlanEncoder.STEP_NODES)),
+            ('resolver_log_probs', GroupedSoftmaxDecoder(
+                hparams,
+                self.plan_encoder.resolves_relation,
+                contexts=[HEAD_CONTEXTS[name] for name in self.config.resolver_contexts if name != SIBLINGS_CONTEXT],
+                sibling_context=SIBLINGS_CONTEXT in self.config.resolver_contexts,
+                pooling=pooling,
+            )),
+            ('delete_logits', NodeScalarDecoder(
+                hparams,
+                PartialPlanEncoder.STEP_NODES,
+                contexts=[HEAD_CONTEXTS[name] for name in self.config.delete_contexts],
+                pooling=pooling,
+            )),
         ]
         module_config = ModuleConfig(
             aggregation_function=_aggregation(self.config.aggregation),

@@ -7,7 +7,7 @@ import torch
 from .bases import Decoder
 from .configs import HyperparameterConfig
 from .encoders import EncodedTensors
-from .modules import SumReadout, MLP
+from .modules import MLP, PooledReadout, Pooling, SumReadout
 
 
 class ActionScalarDecoder(Decoder):
@@ -159,6 +159,52 @@ def _split_by_instance(values: torch.Tensor, instance_ids: torch.Tensor, batch_s
     return list(values.index_select(0, order).split(counts.tolist()))
 
 
+def _global_node_ids(per_instance: Sequence[Sequence[int] | torch.Tensor], device: torch.device) -> tuple[torch.Tensor, list[int]]:
+    """Concatenate per-instance node id lists into one device tensor with the sizes."""
+    tensors = [torch.as_tensor(ids, dtype=torch.long).view(-1) for ids in per_instance]
+    sizes = [tensor.numel() for tensor in tensors]
+    if tensors:
+        return torch.cat(tensors).to(device), sizes
+    return torch.empty((0,), dtype=torch.long, device=device), sizes
+
+
+# The context name of the object nodes of an instance; every other context name is a key of the encoding extras.
+OBJECTS_CONTEXT = 'objects'
+
+
+def _context_nodes(context: str, encoding: EncodedTensors, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
+    """The global node ids of a context, instance after instance, and the number of them per instance.
+
+    A context is a group of nodes per instance: ``'objects'`` names the object
+    nodes, any other name is a key of ``encoding.extras`` holding one sequence
+    (list or LongTensor) of global node ids per instance.
+    """
+    if context == OBJECTS_CONTEXT:
+        return encoding.object_indices, encoding.object_sizes
+    assert context in encoding.extras, f"The context '{context}' is neither 'objects' nor a key of the encoding extras."
+    per_instance = encoding.extras[context]
+    batch_size = encoding.node_sizes.numel()
+    assert len(per_instance) == batch_size, (
+        f"extras['{context}'] must list the nodes of every instance ({batch_size}), got {len(per_instance)}."
+    )
+    node_ids, sizes = _global_node_ids(per_instance, device)
+    return node_ids, torch.tensor(sizes, dtype=torch.long, device=device)
+
+
+def _pooled_contexts(
+    readouts: Sequence[PooledReadout],
+    contexts: Sequence[str],
+    node_embeddings: torch.Tensor,
+    encoding: EncodedTensors,
+) -> list[torch.Tensor]:
+    """One (batch, output_size) tensor per context: its nodes pooled per instance and transformed by its readout."""
+    pooled: list[torch.Tensor] = []
+    for readout, context in zip(readouts, contexts):
+        node_ids, sizes = _context_nodes(context, encoding, node_embeddings.device)
+        pooled.append(readout(node_embeddings.index_select(0, node_ids), sizes))
+    return pooled
+
+
 @dataclass
 class GroupedLogProbs:
     """Log-probabilities of members competing within groups for one input instance.
@@ -211,7 +257,18 @@ class GroupedSoftmaxDecoder(Decoder):
     the same group node are normalized by a log-softmax. Rows of the same group
     may come from different relation entries but a group must belong to one
     instance, which holds since node ids are allocated per instance.
+
+    The score can additionally see pooled contexts: for every name in
+    ``contexts`` a :class:`PooledReadout` over that node group of the row's
+    instance (``'objects'`` or a key of ``encoding.extras`` listing global node
+    ids per instance), and with ``sibling_context`` a PooledReadout over the
+    member embeddings of all rows of the same group, the row itself included.
     """
+
+    # Class-level defaults: a decoder unpickled from a checkpoint written before contexts existed (see
+    # RelationalGraphNeuralNetwork.save, which stores the decoders themselves) has no such attributes.
+    _contexts: tuple[str, ...] = ()
+    _sibling_context: bool = False
 
     def __init__(
         self,
@@ -221,6 +278,9 @@ class GroupedSoftmaxDecoder(Decoder):
         group_position: int = 1,
         include_group_embedding: bool = True,
         arity: int | None = None,
+        contexts: Sequence[str] = (),
+        sibling_context: bool = False,
+        pooling: Pooling = 'sum',
     ):
         """Initialize the grouped softmax decoder.
 
@@ -233,6 +293,11 @@ class GroupedSoftmaxDecoder(Decoder):
                 next to the member embedding.
             arity: The arity of the relation. Defaults to the smallest arity that
                 holds both positions.
+            contexts: The node groups of the instance whose pooled embeddings the
+                score sees: ``'objects'`` or keys of ``encoding.extras``.
+            sibling_context: Whether the score sees the pooled member embeddings
+                of the rows competing in the same group.
+            pooling: How the contexts and the siblings are pooled.
         """
         super().__init__()
         assert isinstance(hparam_config, HyperparameterConfig), "hparam_config must be an instance of HyperparameterConfig."
@@ -243,8 +308,20 @@ class GroupedSoftmaxDecoder(Decoder):
         self._include_group_embedding = include_group_embedding
         self._arity = max(member_position, group_position) + 1 if arity is None else arity
         assert self._arity > max(member_position, group_position), "arity must hold both positions."
-        input_size = (2 if include_group_embedding else 1) * hparam_config.embedding_size
-        self._score = MLP(input_size, 1)
+        assert not isinstance(contexts, str), "contexts must be a sequence of context names, not a single string."
+        assert len(set(contexts)) == len(contexts), "The contexts must be distinct."
+        self._contexts = tuple(contexts)
+        self._sibling_context = sibling_context
+        embedding_size = hparam_config.embedding_size
+        # Without contexts the module has exactly the parameters it had before contexts existed.
+        if self._contexts:
+            self._context_readouts = torch.nn.ModuleList(
+                PooledReadout(embedding_size, embedding_size, pooling) for _ in self._contexts
+            )
+        if sibling_context:
+            self._sibling_readout = PooledReadout(embedding_size, embedding_size, pooling)
+        input_count = (2 if include_group_embedding else 1) + len(self._contexts) + (1 if sibling_context else 0)
+        self._score = MLP(input_count * embedding_size, 1)
 
     def forward(self, node_embeddings: torch.Tensor, encoding: EncodedTensors) -> list[GroupedLogProbs]:
         """Compute grouped log-probabilities for every input instance.
@@ -266,12 +343,22 @@ class GroupedSoftmaxDecoder(Decoder):
         member_ids = rows[:, self._member_position]
         group_ids = rows[:, self._group_position]
 
+        instance_ids = _instance_of_nodes(group_ids, encoding)
+
         member_embeddings = node_embeddings.index_select(0, member_ids)
+        score_inputs = [member_embeddings]
         if self._include_group_embedding:
-            group_embeddings = node_embeddings.index_select(0, group_ids)
-            scores = self._score(torch.cat((member_embeddings, group_embeddings), dim=1)).view(-1)
-        else:
-            scores = self._score(member_embeddings).view(-1)
+            score_inputs.append(node_embeddings.index_select(0, group_ids))
+        if self._contexts:
+            readouts: list[PooledReadout] = list(self._context_readouts)  # type: ignore[arg-type]
+            for pooled in _pooled_contexts(readouts, self._contexts, node_embeddings, encoding):
+                score_inputs.append(pooled.index_select(0, instance_ids))
+        if self._sibling_context:
+            # Dense group numbers: pooling into a buffer of one row per node would transform mostly empty rows.
+            groups, group_of_row = torch.unique(group_ids, return_inverse=True)
+            siblings = self._sibling_readout.forward_indexed(member_embeddings, group_of_row, groups.numel())
+            score_inputs.append(siblings.index_select(0, group_of_row))
+        scores = self._score(score_inputs[0] if len(score_inputs) == 1 else torch.cat(score_inputs, dim=1)).view(-1)
 
         # Segment log-softmax: shift by the maximum score of each group, which does not change the result, then
         # normalize by the log of the summed exponentials. Group ids are node ids, so a node-sized buffer suffices.
@@ -281,7 +368,6 @@ class GroupedSoftmaxDecoder(Decoder):
         group_sums = scores.new_zeros((encoding.node_count,)).index_add(0, group_ids, shifted.exp())
         log_probs = shifted - group_sums.index_select(0, group_ids).log()
 
-        instance_ids = _instance_of_nodes(group_ids, encoding)
         stacked = torch.stack((member_ids, group_ids), dim=1)
         ids_per_instance = _split_by_instance(stacked, instance_ids, batch_size)
         log_probs_per_instance = _split_by_instance(log_probs, instance_ids, batch_size)
@@ -291,36 +377,56 @@ class GroupedSoftmaxDecoder(Decoder):
         ]
 
 
-def _global_node_ids(per_instance: Sequence[Sequence[int] | torch.Tensor], device: torch.device) -> tuple[torch.Tensor, list[int]]:
-    """Concatenate per-instance node id lists into one device tensor with the sizes."""
-    tensors = [torch.as_tensor(ids, dtype=torch.long).view(-1) for ids in per_instance]
-    sizes = [tensor.numel() for tensor in tensors]
-    if tensors:
-        return torch.cat(tensors).to(device), sizes
-    return torch.empty((0,), dtype=torch.long, device=device), sizes
-
-
 class NodeScalarDecoder(Decoder):
     """Decoder for scalar values over nodes listed in the encoding extras.
 
     Custom encoders list the node ids to score under ``encoding.extras[key]`` as
     one sequence (list or LongTensor of global node ids) per input instance. Each
-    listed node is scored by an MLP over its embedding and a sum readout of the
-    instance's object embeddings, like ActionScalarDecoder does for actions.
+    listed node is scored by an MLP over its embedding and the pooled contexts of
+    its instance. By default the only context is a sum readout of the instance's
+    object embeddings, like ActionScalarDecoder uses for actions; ``contexts``
+    names other node groups (``'objects'`` or keys of ``encoding.extras`` listing
+    global node ids per instance), each pooled by its own :class:`PooledReadout`.
     """
 
-    def __init__(self, hparam_config: HyperparameterConfig, extras_key: str):
+    # Class-level defaults: a decoder unpickled from a checkpoint written before contexts existed (see
+    # RelationalGraphNeuralNetwork.save, which stores the decoders themselves) has no such attributes.
+    _contexts: tuple[str, ...] = (OBJECTS_CONTEXT,)
+    _legacy_object_readout: bool = True
+
+    def __init__(
+        self,
+        hparam_config: HyperparameterConfig,
+        extras_key: str,
+        contexts: Sequence[str] = (OBJECTS_CONTEXT,),
+        pooling: Pooling = 'sum',
+    ):
         """Initialize the node scalar decoder.
 
         Args:
             hparam_config: The hyperparameter configuration containing embedding sizes.
             extras_key: The key under ``encoding.extras`` listing the node ids per instance.
+            contexts: The node groups of the instance whose pooled embeddings the
+                value sees; empty to score a node from its embedding alone.
+            pooling: How the contexts are pooled.
         """
         super().__init__()
         assert isinstance(hparam_config, HyperparameterConfig), "hparam_config must be an instance of HyperparameterConfig."
+        assert not isinstance(contexts, str), "contexts must be a sequence of context names, not a single string."
+        assert len(set(contexts)) == len(contexts), "The contexts must be distinct."
         self._extras_key = extras_key
-        self._object_readout = SumReadout(hparam_config.embedding_size, hparam_config.embedding_size)
-        self._node_value = MLP(2 * hparam_config.embedding_size, 1)
+        self._contexts = tuple(contexts)
+        embedding_size = hparam_config.embedding_size
+        # The default keeps the module and the parameter names it had before contexts existed, so that checkpoints
+        # of it keep loading.
+        self._legacy_object_readout = self._contexts == (OBJECTS_CONTEXT,) and pooling == 'sum'
+        if self._legacy_object_readout:
+            self._object_readout = SumReadout(embedding_size, embedding_size)
+        elif self._contexts:
+            self._context_readouts = torch.nn.ModuleList(
+                PooledReadout(embedding_size, embedding_size, pooling) for _ in self._contexts
+            )
+        self._node_value = MLP((1 + len(self._contexts)) * embedding_size, 1)
 
     def forward(self, node_embeddings: torch.Tensor, encoding: EncodedTensors) -> list[torch.Tensor]:
         """Compute scalar values for the listed nodes of each instance.
@@ -339,14 +445,20 @@ class NodeScalarDecoder(Decoder):
         )
         node_ids, sizes = _global_node_ids(per_instance, node_embeddings.device)
         listed_embeddings = node_embeddings.index_select(0, node_ids)
-        object_embeddings = node_embeddings.index_select(0, encoding.object_indices)
-        object_aggregation = self._object_readout(object_embeddings, encoding.object_sizes)
-        object_aggregation = object_aggregation.repeat_interleave(
-            torch.tensor(sizes, dtype=torch.long, device=node_embeddings.device),
-            dim=0,
-            output_size=listed_embeddings.shape[0],
-        )
-        values = self._node_value(torch.cat((listed_embeddings, object_aggregation), dim=1)).view(-1)
+        if self._legacy_object_readout:
+            object_embeddings = node_embeddings.index_select(0, encoding.object_indices)
+            pooled_contexts = [self._object_readout(object_embeddings, encoding.object_sizes)]
+        elif self._contexts:
+            readouts: list[PooledReadout] = list(self._context_readouts)  # type: ignore[arg-type]
+            pooled_contexts = _pooled_contexts(readouts, self._contexts, node_embeddings, encoding)
+        else:
+            pooled_contexts = []
+        value_inputs = [listed_embeddings]
+        if pooled_contexts:
+            listed_sizes = torch.tensor(sizes, dtype=torch.long, device=node_embeddings.device)
+            for pooled in pooled_contexts:
+                value_inputs.append(pooled.repeat_interleave(listed_sizes, dim=0, output_size=listed_embeddings.shape[0]))
+        values = self._node_value(value_inputs[0] if len(value_inputs) == 1 else torch.cat(value_inputs, dim=1)).view(-1)
         if batch_size == 1:
             return [values]
         return list(values.split(sizes))

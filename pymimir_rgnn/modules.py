@@ -1,7 +1,53 @@
-from typing import Literal
+from typing import Literal, get_args
 
 import torch
 import torch.nn as nn
+
+
+Pooling = Literal['sum', 'mean', 'max', 'maxmean']
+"""How the embeddings of a group of nodes are pooled into one vector.
+
+Sum pooling grows with the size of the group, mean and max pooling do not. Max
+detects whether some node has a property, mean compares how often properties
+occur, and ``maxmean`` concatenates both.
+"""
+
+POOLINGS: tuple[str, ...] = get_args(Pooling)
+
+
+def pooled_size(embedding_size: int, pooling: str) -> int:
+    """The size of a vector pooled by :func:`pool_by_index` from embeddings of ``embedding_size``."""
+    assert pooling in POOLINGS, f'Unknown pooling {pooling!r}; expected one of {POOLINGS}.'
+    return 2 * embedding_size if pooling == 'maxmean' else embedding_size
+
+
+def pool_by_index(embeddings: torch.Tensor, group_index: torch.Tensor, num_groups: int, pooling: str) -> torch.Tensor:
+    """Pool the rows of ``embeddings`` within groups.
+
+    Args:
+        embeddings: Tensor of shape (N, E).
+        group_index: LongTensor of shape (N,) with the group of every row, in
+            ``[0, num_groups)``; the rows of a group need not be contiguous.
+        num_groups: The number of groups.
+        pooling: One of :data:`Pooling`.
+
+    Returns:
+        Tensor of shape (num_groups, E), or (num_groups, 2E) for ``maxmean``
+        (the maximum followed by the mean). A group without rows yields zeros.
+    """
+    assert pooling in POOLINGS, f'Unknown pooling {pooling!r}; expected one of {POOLINGS}.'
+    size = (num_groups, embeddings.shape[1])
+    if pooling == 'sum':
+        return embeddings.new_zeros(size).index_add(0, group_index, embeddings)
+    counts = embeddings.new_zeros((num_groups, 1)).index_add(0, group_index, embeddings.new_ones((embeddings.shape[0], 1)))
+    pooled: list[torch.Tensor] = []
+    if pooling in ('max', 'maxmean'):
+        maxima = embeddings.new_full(size, float('-inf')).index_reduce(0, group_index, embeddings, 'amax', include_self=True)
+        # A group without rows keeps the -inf it started from; it pools to zero instead.
+        pooled.append(torch.where(counts > 0, maxima, torch.zeros_like(maxima)))
+    if pooling in ('mean', 'maxmean'):
+        pooled.append(embeddings.new_zeros(size).index_add(0, group_index, embeddings) / counts.clamp(min=1.0))
+    return pooled[0] if len(pooled) == 1 else torch.cat(pooled, dim=1)
 
 
 class MLP(nn.Module):
@@ -208,3 +254,54 @@ class SumReadout(nn.Module):
                                          output_size=node_embeddings.shape[0])
         aggregated_embeddings = node_embeddings.new_zeros((node_sizes.numel(), node_embeddings.shape[1]))
         return self._value(aggregated_embeddings.index_add(0, groups, node_embeddings))
+
+
+class PooledReadout(nn.Module):
+    """Readout module that pools embeddings within groups and applies an MLP.
+
+    The generalization of :class:`SumReadout` to the poolings of :data:`Pooling`.
+    The MLP is named like the one of SumReadout, so a sum-pooled PooledReadout
+    loads the parameters of a SumReadout.
+    """
+
+    def __init__(self, input_size: int, output_size: int, pooling: str = 'sum'):
+        """Initialize the pooled readout module.
+
+        Args:
+            input_size: Size of the input embeddings.
+            output_size: Size of the output features.
+            pooling: One of :data:`Pooling`.
+        """
+        super().__init__()
+        self.pooling = pooling
+        self._value = MLP(pooled_size(input_size, pooling), output_size)
+
+    def forward(self, node_embeddings: torch.Tensor, node_sizes: torch.Tensor) -> torch.Tensor:
+        """Pool the embeddings of contiguous groups and apply the MLP.
+
+        Args:
+            node_embeddings: Node embeddings to aggregate, group after group.
+            node_sizes: Number of nodes in each group.
+
+        Returns:
+            Pooled and transformed embeddings, one per group.
+        """
+        if node_sizes.numel() == 1:
+            groups = torch.zeros(node_embeddings.shape[0], dtype=torch.long, device=node_embeddings.device)
+        else:
+            groups = torch.repeat_interleave(torch.arange(node_sizes.numel(), device=node_sizes.device), node_sizes,
+                                             output_size=node_embeddings.shape[0])
+        return self.forward_indexed(node_embeddings, groups, node_sizes.numel())
+
+    def forward_indexed(self, node_embeddings: torch.Tensor, group_index: torch.Tensor, num_groups: int) -> torch.Tensor:
+        """Pool the embeddings of arbitrary groups and apply the MLP.
+
+        Args:
+            node_embeddings: Node embeddings to aggregate.
+            group_index: The group of every row of ``node_embeddings``, in ``[0, num_groups)``.
+            num_groups: The number of groups.
+
+        Returns:
+            Pooled and transformed embeddings, one per group; a group without rows is pooled to zeros.
+        """
+        return self._value(pool_by_index(node_embeddings, group_index, num_groups, self.pooling))

@@ -113,6 +113,24 @@ length for both domains.
            --bootstrap --bootstrap-timeout 10 --bootstrap-iterations 2 --iterations 10 \
            --rollouts-per-problem 2 --layers 8 --embedding-size 32
 
+   **Head contexts and poolings.** Both heads score a node from its embedding
+   and pooled contexts of the instance: `objects`, `steps` (the Step-kind
+   steps), `flaws`, and for the resolver head, which also sees the embedding
+   of the flaw, `siblings` (the resolvers competing for the same flaw). Every
+   context has its own readout (`pymimir_rgnn.PooledReadout`). By default the
+   resolver head sees all four contexts, the delete head `objects`, `steps`
+   and `flaws`, and the nodes are pooled with `maxmean` (the maximum
+   concatenated with the mean). `train_hei.py` selects them with
+   `--resolver-contexts` and `--delete-contexts` (comma-separated names,
+   `none` for no context) and `--context-pooling {sum,mean,max,maxmean}`;
+   `train.py` always trains the defaults. The settings are stored in the
+   checkpoint, so `evaluate.py`, `diagnose.py` and `--init-from` need no flags.
+   Checkpoints saved before the contexts existed do not load and must be
+   retrained.
+
+       python scripts/plan_space/train_hei.py --domain-dir data/gripper --output runs/gripper_sum \
+           --resolver-contexts none --delete-contexts objects --context-pooling sum
+
    **Unusable references.** The oracle (`pymimir.oracle_targets`) matches the
    steps of the current plan to the reference heuristically. On references
    with repeated ground actions (typical of non-optimal GBFS plans; in
@@ -140,6 +158,42 @@ Metrics: `coverage`, `mean_rounds`, `mean_plan_length` / `mean_length_ratio`
 schema and binding equal an existing fully bound step), `cycling_events` (a
 schema and binding adopted again after a step with it was deleted earlier in
 the run) and `wall_time`.
+
+## Serial plans
+
+`train_serial.py` and `evaluate_serial.py` run the same experiment on a much
+simpler plan: a sequence of steps (`pymimir.SerialPlan`). Its simulator applies
+the effects of every step even when a precondition fails and reports every
+error (unsatisfied precondition, unmet goal literal, unbound parameter). Every
+round each error picks one of its repairs (index 0 is NoOp) and every step gets
+a delete decision; the plan is a solution when no errors remain. The code is
+`pymimir_rgnn/serial_plan.py` (`SerialPolicy`, `SerialSearch`, `serial_collect`,
+`SerialTrainer`), kept separate from the partial-order code on purpose.
+
+Training is hindsight expert iteration as above, but the bootstrap needs no
+planner: the references come from `pymimir.serial_search`, a search over single
+repairs, with `--bootstrap-timeout` seconds per training problem (0 disables the
+bootstrap). A problem with a reference gets `--bootstrap-oracle-rollouts`
+teacher-forced oracle rollouts and has the policy's episodes (one greedy and
+`--rollouts-per-problem` sampled ones) labelled against the reference when unsolved, and against their own final plan when solved, until the
+policy has solved it `--bootstrap-phase-out` times; after that, and for problems
+without a reference, episodes are labelled in hindsight against the plan they
+achieved. `--bootstrap-iterations` prepends warm-up iterations of oracle
+rollouts only. The heads pool `objects`, `steps`, `errors` and, for the repair
+head, `siblings` (`--repair-contexts`, `--delete-contexts`, `--context-pooling`).
+
+    python scripts/plan_space/train_serial.py --domain-dir data/gripper --output runs/gripper_serial \
+        --bootstrap-iterations 2 --iterations 15 --problems-per-iteration 30 --rollouts-per-problem 1 \
+        --max-rounds 40 --layers 8 --embedding-size 32 --update gru
+    python scripts/plan_space/evaluate_serial.py --checkpoint runs/gripper_serial/latest.pt --domain-dir data/gripper \
+        --max-rounds 60 --time-limit 15
+
+`evaluate_serial.py` validates every solved plan by applying its actions from
+the initial state, writes `results.json` (summary, coverage by number of
+objects, per-problem results) and prints the tables. No reference plans are
+used; the plan length is reported as is. `cycling_events` counts the steps
+created with the schema, binding and purpose literal that a step deleted
+earlier in the run was created with.
 
 ## Cluster
 

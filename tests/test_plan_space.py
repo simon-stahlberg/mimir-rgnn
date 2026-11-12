@@ -88,7 +88,8 @@ def test_encoder_relations_are_declared_and_extras_cover_every_node(domain_name:
     keys = encoded.extras[PartialPlanEncoder.NODE_KEYS]
     types = encoded.extras[PartialPlanEncoder.NODE_TYPES]
     step_nodes = encoded.extras[PartialPlanEncoder.STEP_NODES]
-    assert len(layouts) == len(keys) == len(types) == len(step_nodes) == 2
+    flaw_nodes = encoded.extras[PartialPlanEncoder.FLAW_NODES]
+    assert len(layouts) == len(keys) == len(types) == len(step_nodes) == len(flaw_nodes) == 2
     node_sizes = encoded.node_sizes.tolist()
     for instance, (current, current_flaws) in enumerate([(plan, flaws), (empty, empty_flaws)]):
         assert len(keys[instance]) == len(types[instance]) == node_sizes[instance]
@@ -108,6 +109,15 @@ def test_encoder_relations_are_declared_and_extras_cover_every_node(domain_name:
             layouts[instance].step_node_ids[index] for index, step in enumerate(current.steps) if step.kind is mm.StepKind.STEP
         ]
         assert len(expected_steps) == step_nodes[instance].numel()
+        # The flaw nodes are those of the layout, in the order of the flaws, and lie inside the instance.
+        assert flaw_nodes[instance].dtype == torch.long
+        assert flaw_nodes[instance].tolist() == list(layouts[instance].flaw_node_ids)
+        assert flaw_nodes[instance].numel() == len(current_flaws.flaws) > 0
+        offset = sum(node_sizes[:instance])
+        assert all(types[instance][node_id - offset] == "flaw" for node_id in flaw_nodes[instance].tolist())
+    # The flaws are the groups of the relation the resolver head scores.
+    resolves = encoded.flattened_relations[encoder.resolves_relation].view(-1, 2)
+    assert set(resolves[:, 1].tolist()) == set(torch.cat(flaw_nodes).tolist())
     # Step-kind steps are the action nodes of the instance, in order.
     assert torch.cat(step_nodes).tolist() == encoded.action_indices.tolist()
     assert step_nodes[0].numel() > 0 and step_nodes[1].numel() == 0
@@ -637,3 +647,197 @@ def test_evaluate_restarts_are_recorded_in_the_results(tmp_path: Path) -> None:
     written = json.loads(results.read_text())
     assert written["settings"]["restarts"] == 1
     assert all(result["attempts"] == 1 for result in written["problems_results"].values())
+
+
+_ALL_RESOLVER_CONTEXTS = ("objects", "steps", "flaws", "siblings")
+_ALL_DELETE_CONTEXTS = ("objects", "steps", "flaws")
+
+
+def _mlp_parameters(name: str, input_size: int, output_size: int) -> list[tuple[str, tuple[int, ...]]]:
+    return [
+        (f"{name}._inner.weight", (input_size, input_size)),
+        (f"{name}._inner.bias", (input_size,)),
+        (f"{name}._outer.weight", (output_size, input_size)),
+        (f"{name}._outer.bias", (output_size,)),
+    ]
+
+
+# The head parameters of a default policy with embedding size 16. Every context has a readout of its maxmean-pooled
+# nodes (32 values). The resolver head scores a resolver, its flaw and four contexts, the delete head a step and
+# three contexts.
+_DEFAULT_HEAD_PARAMETERS = [
+    *_mlp_parameters("model._readouts.resolver_log_probs._context_readouts.0._value", 32, 16),
+    *_mlp_parameters("model._readouts.resolver_log_probs._context_readouts.1._value", 32, 16),
+    *_mlp_parameters("model._readouts.resolver_log_probs._context_readouts.2._value", 32, 16),
+    *_mlp_parameters("model._readouts.resolver_log_probs._sibling_readout._value", 32, 16),
+    *_mlp_parameters("model._readouts.resolver_log_probs._score", 96, 1),
+    *_mlp_parameters("model._readouts.delete_logits._context_readouts.0._value", 32, 16),
+    *_mlp_parameters("model._readouts.delete_logits._context_readouts.1._value", 32, 16),
+    *_mlp_parameters("model._readouts.delete_logits._context_readouts.2._value", 32, 16),
+    *_mlp_parameters("model._readouts.delete_logits._node_value", 64, 1),
+]
+
+
+def _head_parameters(policy: PlanSpacePolicy) -> list[tuple[str, tuple[int, ...]]]:
+    return [(key, tuple(value.shape)) for key, value in policy.state_dict().items() if key.startswith("model._readouts.")]
+
+
+def test_policy_config_validates_contexts_and_poolings() -> None:
+    # Lists, as a deserialized config has them, become tuples.
+    config = PolicyConfig(resolver_contexts=["steps", "siblings"], delete_contexts=[])  # type: ignore[arg-type]
+    assert config.resolver_contexts == ("steps", "siblings") and config.delete_contexts == ()
+    assert PolicyConfig.from_dict(config.to_dict()) == config
+    with pytest.raises(ValueError):
+        PolicyConfig(delete_contexts=("siblings",))  # Only the resolver head has siblings.
+    with pytest.raises(ValueError):
+        PolicyConfig(resolver_contexts=("links",))
+    with pytest.raises(ValueError):
+        PolicyConfig(resolver_contexts=("objects", "objects"))
+    with pytest.raises(ValueError):
+        PolicyConfig(context_pooling="median")  # type: ignore[arg-type]
+    with pytest.raises(AssertionError):
+        PolicyConfig(resolver_contexts="objects")  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("domain_name", ["blocks", "gripper"])
+def test_default_policy_pools_every_context_evaluates_trains_and_round_trips(domain_name: str, tmp_path: Path) -> None:
+    domain, problem = _load(domain_name)
+    config = PolicyConfig()
+    assert config.resolver_contexts == _ALL_RESOLVER_CONTEXTS and config.delete_contexts == _ALL_DELETE_CONTEXTS
+    assert config.context_pooling == "maxmean"
+    policy = _policy(domain)
+    assert _head_parameters(policy) == _DEFAULT_HEAD_PARAMETERS
+    context_parameters = [
+        (name, parameter) for name, parameter in policy.named_parameters()
+        if "_context_readouts" in name or "_sibling_readout" in name
+    ]
+    assert len(context_parameters) == 7 * 4
+
+    # Evaluation: aligned with flaws and steps, normalized, and an instance's scores do not depend on the batch.
+    plan, flaws = _half_way_plan(problem)
+    empty = mm.PartialOrderPlan.empty(problem)
+    state = problem.initial_state
+    items = [(state, problem.goal, empty, empty.compute_flaws()), (state, problem.goal, plan, flaws)]
+    with torch.no_grad():
+        outputs = policy.evaluate(items)
+        single = policy.evaluate(items[1:])[0]
+    for output, (_, _, current, current_flaws) in zip(outputs, items):
+        assert len(output.resolver_log_probs) == len(current_flaws.flaws)
+        for log_probs, flaw in zip(output.resolver_log_probs, current_flaws.flaws):
+            assert log_probs.shape == (len(flaw.resolvers),)
+            assert torch.isclose(log_probs.exp().sum(), torch.tensor(1.0), atol=1e-5)
+        assert output.delete_logits.shape == (sum(1 for step in current.steps if step.kind is mm.StepKind.STEP),)
+        assert torch.isfinite(output.delete_logits).all()
+    assert outputs[0].delete_logits.numel() == 0 and outputs[1].delete_logits.numel() > 0
+    for a, b in zip(single.resolver_log_probs, outputs[1].resolver_log_probs):
+        assert torch.allclose(a, b, atol=1e-5)
+    assert torch.allclose(single.delete_logits, outputs[1].delete_logits, atol=1e-5)
+
+    # One training step reaches the readout of every context of both heads.
+    reference = _reference(problem)
+    samples = oracle_rollout(problem, reference, follow_fraction=1.0, max_rounds=40)
+    trainer = ImitationTrainer(policy, TrainingConfig(batch_size=len(samples), lr=3e-3))
+    before = trainer.evaluate(samples)
+    metrics = trainer.train_epoch(samples)
+    assert metrics.sample_count == len(samples) and metrics.loss == metrics.loss
+    for name, parameter in context_parameters:
+        assert parameter.grad is not None and torch.isfinite(parameter.grad).all(), name
+        if name.endswith("_inner.weight"):
+            assert parameter.grad.abs().sum() > 0, name
+    for _ in range(5):
+        trainer.train_epoch(samples)
+    assert trainer.evaluate(samples).loss < before.loss
+
+    # The search runs with the contexts, and the checkpoint rebuilds the same heads.
+    outcome = PlanSpaceSearch().run(policy, problem, max_rounds=3)
+    assert outcome.rounds <= 3
+    path = tmp_path / "policy.pt"
+    policy.save(path, {"iteration": 1})
+    loaded, extras = PlanSpacePolicy.load(domain, path)
+    assert extras == {"iteration": 1}
+    assert loaded.config == policy.config
+    assert _head_parameters(loaded) == _DEFAULT_HEAD_PARAMETERS
+    with torch.no_grad():
+        expected = policy.evaluate(items[1:])[0]
+        actual = loaded.evaluate(items[1:])[0]
+    assert all(torch.equal(a, b) for a, b in zip(actual.resolver_log_probs, expected.resolver_log_probs))
+    assert torch.equal(actual.delete_logits, expected.delete_logits)
+
+
+@pytest.mark.parametrize("delete_contexts", [(), ("steps",)])
+def test_delete_head_contexts_are_configurable(delete_contexts: tuple[str, ...]) -> None:
+    domain, problem = _load("gripper")
+    policy = _policy(domain, resolver_contexts=("siblings",), delete_contexts=delete_contexts, context_pooling="max")
+    names = [name for name, _ in policy.named_parameters()]
+    assert not any("_object_readout" in name for name in names)
+    assert sum("delete_logits._context_readouts" in name for name in names) == 4 * len(delete_contexts)
+    assert sum("resolver_log_probs._sibling_readout" in name for name in names) == 4
+    assert not any("resolver_log_probs._context_readouts" in name for name in names)
+    plan, flaws = _half_way_plan(problem)
+    output = policy.evaluate([(problem.initial_state, problem.goal, plan, flaws)])[0]
+    assert output.delete_logits.numel() > 0 and torch.isfinite(output.delete_logits).all()
+    assert all(torch.isclose(log_probs.exp().sum(), torch.tensor(1.0), atol=1e-5) for log_probs in output.resolver_log_probs)
+
+
+def test_train_hei_context_flags_default_to_the_policy_config_defaults() -> None:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+    import train_hei  # noqa: PLC0415
+
+    assert train_hei.parse_contexts("none") == () and train_hei.parse_contexts("") == ()
+    assert train_hei.parse_contexts("objects, steps,flaws") == ("objects", "steps", "flaws")
+    arguments = train_hei.build_parser().parse_args(["--domain-dir", "data", "--output", "run"])
+    config = PolicyConfig()
+    assert arguments.resolver_contexts == config.resolver_contexts and arguments.delete_contexts == config.delete_contexts
+    assert arguments.context_pooling == config.context_pooling
+
+
+def test_train_hei_with_and_without_contexts_runs_end_to_end(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+    from generate_instances import generate  # noqa: PLC0415
+    import diagnose  # noqa: PLC0415
+    import evaluate  # noqa: PLC0415
+    import train_hei  # noqa: PLC0415
+
+    data = tmp_path / "data"
+    generate("blocks", data, {"train": 3, "validation": 2}, 3, 3, 31)
+    domain = mm.Domain.from_file(data / "domain.pddl")
+    small = ["--epochs-per-iteration", "1", "--max-rounds", "6", "--layers", "2", "--embedding-size", "8", "--batch-size", "8",
+             "--rollouts-per-problem", "1"]
+
+    # The default flags: every context on both heads, pooled with maxmean.
+    output = tmp_path / "contexts"
+    train_hei.main(["--domain-dir", str(data), "--output", str(output), "--iterations", "2", *small])
+    loaded, _ = PlanSpacePolicy.load(domain, output / "latest.pt")
+    assert loaded.config.resolver_contexts == _ALL_RESOLVER_CONTEXTS and loaded.config.delete_contexts == _ALL_DELETE_CONTEXTS
+    assert loaded.config.context_pooling == "maxmean"
+
+    # The evaluation and the diagnosis rebuild the heads from the checkpoint alone.
+    results = tmp_path / "results.json"
+    evaluate.main([
+        "--checkpoint", str(output / "latest.pt"), "--domain-dir", str(data), "--problems", str(data / "validation"),
+        "--output", str(results), "--max-rounds", "3", "--time-limit", "5", "--no-reference",
+    ])
+    assert len(json.loads(results.read_text())["problems_results"]) == 2
+    diagnosis = tmp_path / "diagnosis.json"
+    monkeypatch.setattr(sys, "argv", [
+        "diagnose.py", "--checkpoint", str(output / "latest.pt"), "--domain-dir", str(data),
+        "--problems", str(data / "validation"), "--max-rounds", "3", "--output", str(diagnosis),
+    ])
+    diagnose.main()
+    diagnosed = json.loads(diagnosis.read_text())[str(data / "validation")]
+    assert diagnosed["oracle_plans"]["plans"] > 0 and diagnosed["oracle_plans"]["resolver_acc"] is not None
+
+    # "none" removes the contexts of a head.
+    bare = tmp_path / "bare"
+    train_hei.main([
+        "--domain-dir", str(data), "--output", str(bare), "--iterations", "2", *small,
+        "--resolver-contexts", "none", "--delete-contexts", "none", "--context-pooling", "sum",
+    ])
+    loaded, _ = PlanSpacePolicy.load(domain, bare / "latest.pt")
+    assert loaded.config.resolver_contexts == () and loaded.config.delete_contexts == ()
+    assert loaded.config.context_pooling == "sum"
+
+    # Invalid combinations are rejected by the command line.
+    for invalid in (["--resolver-contexts", "links"], ["--delete-contexts", "siblings"], ["--context-pooling", "median"]):
+        with pytest.raises(SystemExit):
+            train_hei.main(["--domain-dir", str(data), "--output", str(tmp_path / "invalid"), "--iterations", "1", *small, *invalid])
