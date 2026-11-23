@@ -158,6 +158,38 @@ def test_forward_model_supports_parameter_free_message_passing(dtype, layers):
     assert torch.equal(prepared_output, output)
 
 
+def test_centered_updates_have_no_mean_within_each_graph() -> None:
+    torch.manual_seed(0)
+    domain = mm.Domain.from_file(DATA_DIR / 'gripper' / 'domain.pddl')
+    problem = mm.Problem.from_file(domain, DATA_DIR / 'gripper' / 'problem.pddl')
+    config = HyperparameterConfig(
+        domain=domain,
+        num_layers=1,
+        embedding_size=4,
+        center_updates=True,
+        normalize_updates=False,
+        residual_updates=False,
+    )
+    input_spec = (StateEncoder(),)
+    model = RelationalGraphNeuralNetwork(
+        config,
+        ModuleConfig(SumAggregation(), PredicateMLPMessages(config, input_spec), MLPUpdates(config)),
+        input_spec,
+        [('embeddings', ObjectsEmbeddingDecoder())],
+    )
+    states = [problem.initial_state] + [successor for _, successor in problem.initial_state.successor_states()]
+    inputs = [(state,) for state in states]
+
+    batched = model(inputs).readout('embeddings')
+
+    assert len(batched) > 1
+    for input, embeddings in zip(inputs, batched):
+        assert torch.allclose(embeddings.mean(dim=0), torch.zeros(4), atol=1e-6)
+        # The mean is taken per graph: a state's embeddings do not depend on the rest of the batch.
+        alone, = model([input]).readout('embeddings')
+        assert torch.allclose(alone, embeddings, atol=1e-6)
+
+
 def test_forward_with_lifted_nullary_facts_and_unary_transition_effect() -> None:
     domain = mm.Domain.from_pddl(
         """
@@ -1311,6 +1343,7 @@ def _q_value_inputs(dom: str) -> tuple[mm.Domain, list[tuple]]:
     {'global_readout': False},
     {'normalize_updates': False, 'residual_updates': True},
     {'channelwise_normalization': True},
+    {'center_updates': True},
 ])
 def test_replayed_layers_give_the_outputs_of_running_every_layer(monkeypatch: pytest.MonkeyPatch, dom: str, config: dict[str, Any]):
     domain, inputs = _q_value_inputs(dom)
@@ -1450,14 +1483,15 @@ def _eager_and_recorded_gradients(monkeypatch: pytest.MonkeyPatch, model: Relati
 
 
 def _assert_same_gradients(eager: tuple[torch.Tensor, list[torch.Tensor | None]],
-                           recorded: tuple[torch.Tensor, list[torch.Tensor | None]]) -> None:
+                           recorded: tuple[torch.Tensor, list[torch.Tensor | None]],
+                           absolute_tolerance: float = 1e-6) -> None:
     assert torch.allclose(recorded[0], eager[0], rtol=1e-5)
     for recorded_gradient, eager_gradient in zip(recorded[1], eager[1]):
         assert (recorded_gradient is None) == (eager_gradient is None)
         if eager_gradient is not None:
             # Relative to the scale of the gradient: the atomic additions of index_add_ make even two runs of every
             # layer differ slightly.
-            assert (recorded_gradient - eager_gradient).abs().max() <= 1e-4 * eager_gradient.abs().max() + 1e-6
+            assert (recorded_gradient - eager_gradient).abs().max() <= 1e-4 * eager_gradient.abs().max() + absolute_tolerance
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="replaying layers needs CUDA")
@@ -1487,6 +1521,18 @@ def test_recorded_training_supports_the_layer_configurations(monkeypatch: pytest
     eager, recorded, recordings = _eager_and_recorded_gradients(monkeypatch, model, inputs)
     assert recordings == 1
     _assert_same_gradients(eager, recorded)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="replaying layers needs CUDA")
+@pytest.mark.parametrize("dom", ['blocks', 'gripper'])
+def test_recorded_training_supports_centered_updates(monkeypatch: pytest.MonkeyPatch, dom: str):
+    domain, inputs = _q_value_inputs(dom)
+    model = _q_value_model(domain, MIN_REPLAYED_LAYERS + 2, center_updates=True).to('cuda')
+    eager, recorded, recordings = _eager_and_recorded_gradients(monkeypatch, model, inputs)
+    assert recordings == 1
+    # Centering removes the bias that the update adds to every node, so the gradient of that bias is zero up to
+    # rounding, which differs between runs.
+    _assert_same_gradients(eager, recorded, absolute_tolerance=1e-5)
 
 
 class _EvaluatingModel(RelationalGraphNeuralNetwork):

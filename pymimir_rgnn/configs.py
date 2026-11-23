@@ -19,6 +19,11 @@ class HyperparameterConfig:
         embedding_size: The size of the node embeddings.
         message_hidden_size: The hidden size of predicate-message MLPs. Optional.
         num_layers: The number of message passing layers.
+        center_updates: Whether to subtract from each node's update the mean update of
+            its graph, before any normalization. What all nodes of a graph share then no
+            longer takes up the normalized update, so what distinguishes the nodes is kept.
+            A bias that the update function adds to every node then has no effect. Updates
+            from the global readout are not centered.
         normalize_updates: Whether to apply normalization to embedding updates.
         channelwise_normalization: Whether to use a per-channel learnable affine
             instead of layer normalization for the embedding updates. Keeps each
@@ -55,6 +60,12 @@ class HyperparameterConfig:
     num_layers: int = field(
         default=30,
         metadata={'doc': 'The number of message passing layers.'}
+    )
+
+    center_updates: bool = field(
+        default=False,
+        metadata={'doc': "Whether to subtract from each node's update the mean update of its graph, "
+                         'before any normalization.'}
     )
 
     normalize_updates: bool = field(

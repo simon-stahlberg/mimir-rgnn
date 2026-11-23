@@ -359,6 +359,18 @@ class RelationalLayerModule(nn.Module):
         return self._update.forward(node_embeddings, aggregated_messages)
 
 
+def _center_per_graph(updates: torch.Tensor, node_sizes: torch.Tensor) -> torch.Tensor:
+    """Subtract from each node's update the mean update of the nodes of its graph.
+
+    The mean is taken per graph, so a graph's embeddings do not depend on the other graphs of the batch.
+    """
+    graphs = torch.repeat_interleave(torch.arange(node_sizes.numel(), device=node_sizes.device), node_sizes,
+                                     output_size=updates.shape[0])
+    sums = updates.new_zeros((node_sizes.numel(), updates.shape[1])).index_add(0, graphs, updates)
+    means = sums / node_sizes.unsqueeze(1)
+    return updates - means.index_select(0, graphs)
+
+
 class RelationalLayerStackModule(nn.Module):
     """Module that implements multiple layers of relational message passing.
 
@@ -469,6 +481,8 @@ class RelationalLayerStackModule(nn.Module):
         updates = self._relation_network(node_embeddings, input.flattened_relations)
         layer_records = list(self._message.quantization_records())
 
+        if self._config.center_updates:
+            updates = _center_per_graph(updates, input.node_sizes)
         if self._config.normalize_updates:
             updates = self._update_normalization(updates)
         if self._config.global_readout:
